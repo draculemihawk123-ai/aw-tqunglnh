@@ -23,6 +23,7 @@ import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generate
 import type { WorkItemContract } from '../api/work';
 import type { RedoPreview } from '../api/redo';
 import { RunGraphCanvas } from '../graph/RunGraphCanvas';
+import { NewTaskDialog } from './NewTaskDialog';
 import { RunHistoryPanel } from '../graph/RunHistoryPanel';
 import { formatDuration, mergeRunHistory } from '../graph/runHistory';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
@@ -103,6 +104,7 @@ function TaskHeader({
   const [cancelWiDialog, setCancelWiDialog] = useState(false);
   const [retryDialog, setRetryDialog] = useState(false);
   const [recreateDialog, setRecreateDialog] = useState(false);
+  const [newTaskDialog, setNewTaskDialog] = useState(false); // V12-14
   const [cancelReason, setCancelReason] = useState('');
   const [resolvingBlocker, setResolvingBlocker] = useState<BlockerDiagnostic | null>(null);
   const [resolveMode, setResolveMode] = useState<'RESOLVED' | 'WAIVED'>('RESOLVED');
@@ -334,6 +336,9 @@ function TaskHeader({
           {/* Single ValidActionBar — only actions the real server-computed data currently advertises */}
           <ValidActionBar actions={[
             ...(canStartRun ? [{ label: 'Start Run', intent: 'primary' as const, onClick: () => startRunMutation.mutate(), disabled: isOffline || startRunMutation.isPending }] : []),
+            // V12-14: a child task of this work item, with a contract, from the UI (no JSON file, no run-task.sh).
+            ...(workItem && workItem.status !== 'DONE' && workItem.status !== 'CANCELLED'
+              ? [{ label: 'New task', intent: 'secondary' as const, onClick: () => setNewTaskDialog(true), disabled: isOffline }] : []),
             ...(canRetry ? [{ label: 'Run Again', intent: 'primary' as const, onClick: () => setRetryDialog(true), disabled: isOffline }] : []),
             ...(canRecreate ? [{ label: 'Redo with Latest Version', intent: 'secondary' as const, onClick: () => setRecreateDialog(true), disabled: isOffline }] : []),
             ...(canCancelRun ? [{ label: 'Cancel Run', intent: 'secondary' as const, onClick: () => setCancelRunDialog(true), disabled: isOffline }] : []),
@@ -440,6 +445,11 @@ function TaskHeader({
           <TextField label="Reason" required value={cancelReason} onChange={setCancelReason} placeholder="Why this run is being cancelled" />
           {cancelRunMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(cancelRunMutation.error)} /></div>}
         </Dialog>
+      )}
+
+      {newTaskDialog && (
+        <NewTaskDialog projectId={projectId} parentWorkItemId={workItemId} isOffline={isOffline} onClose={() => setNewTaskDialog(false)}
+          onCreated={id => { setNewTaskDialog(false); onActionSettled(); show({ intent: 'success', message: `Task created (${id}).` }); onTabChange('task-overview', { projectId, taskId: id }); }} />
       )}
 
       {/* ── Use the new CLI (V12-05) ──────────────────────────────────── */}

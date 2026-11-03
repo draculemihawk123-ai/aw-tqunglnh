@@ -441,6 +441,13 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - `parentJoinPolicy` có mặc định;
   - kiểm tra trước khi tạo: đường dẫn được nhắc trong contract mà nằm ngoài `pathScopes` thì cảnh báo; AC thiếu thì báo.
 - **Ghi chú:** API `create-child` đã có. "Soạn contract bằng AI từ một câu mô tả" là phần mở rộng, chỉ làm nếu product owner duyệt.
+- **Kết quả (đã xong, không cần API mới):** nút **New task** trên trang task mở `NewTaskDialog`: mẫu theo loại việc (bug fix, feature,
+  documentation, infrastructure), tiêu đề, behavior, AC, cách kiểm, rủi ro, scope theo repository với thư mục (gợi ý từ Components và
+  `docs`), workflow chọn từ các định nghĩa project đã publish (version mới nhất) kèm "use when" và nhãn "suggested" (chỉ `docs/` → docs-change,
+  bug fix → bugfix, rủi ro MEDIUM+ → plus), cảnh báo khi chọn lệch, `parentJoinPolicy` mặc định `ALL_CHILDREN_DONE`, hoặc dán JSON của
+  `run-task.sh`. Kiểm tra trước khi tạo (`web/src/api/newTask.ts`, thuần): đường dẫn trong contract mà không scope nào phủ (trường hợp P2-01)
+  là cảnh báo; thiếu tiêu đề/behavior/AC/scope/workflow, AC còn placeholder là lỗi chặn. Test: `newTask.test.ts`, `NewTaskDialog.test.tsx`.
+  Không làm phần "soạn contract bằng AI" (chờ product owner duyệt).
 
 ### V12-15 — Sơ đồ workflow trên trang Definitions (UX-44)
 
