@@ -45,6 +45,7 @@
       "size:passed",
       "quality:passed",
       "review:approved",
+      "sync:done",
       "gate2:rejected",
       "reject:-"
     ]

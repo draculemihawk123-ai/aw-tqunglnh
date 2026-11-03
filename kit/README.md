@@ -116,9 +116,9 @@ flowchart LR
   Q -->|failed| B
   Q -->|passed| R[review<br/>CHECKER độc lập]
   R -->|rework| B
-  R -->|approved| G2[[gate2 người duyệt]]
+  R -->|approved| S[sync<br/>chỉ ghi docs/] --> G2[[gate2 người duyệt<br/>duyệt kèm commit]]
   G2 -->|revise| B
-  G2 -->|approved| S[sync] --> E((end))
+  G2 -->|approved| E((end))
   B -->|escalated| X[reject]
   P -->|escalated| X
   G2 -->|rejected| X
@@ -141,6 +141,11 @@ flowchart LR
 ```
 
 Điều cần biết khi dùng:
+
+- **`sync` chạy TRƯỚC `gate2` (V12-02, kit 1.8.0).** Trước đây `sync` chạy sau khi người duyệt; `sync` hỏng (ví dụ ghi file ngoài scope)
+  thì cả run `FAILED` dù code đã được duyệt, và `gate2` không duyệt kèm commit được (engine cấm commit lúc quyết định khi node sau còn
+  ghi worktree). Nay người duyệt xem cả code lẫn tài liệu, `gate2` có `release: {commit: OFFERED}` và là bước cuối. `run-task.sh` thêm
+  `docs` vào `pathScopes` của scope WRITE cho `wf-task-delivery*` (đặt `NO_SYNC_DOCS=1` để giữ nguyên contract).
 
 - **Agent `debug` không nhận kết quả của kiểm tra đỏ.** Engine chỉ đưa `checkFailures` cho agent sửa đi thẳng từ một kiểm tra; một CHECKER
   nhận yêu cầu, diff và evidence nhưng prompt không có đoạn lỗi (đã kiểm bằng `walk-workflow.py`, xem dưới). Vì vậy `debug.diagnosis-report`

@@ -120,6 +120,13 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   commit phần đã duyệt rồi đóng run có ghi chú.
 - **Thực hiện (đề xuất):** bật `release: {commit: OFFERED}` cho `gate2` của `wf-task-delivery-plus` và `wf-task-delivery`.
   Scope mặc định của `sync` cho phép `docs/`. Chạy lại từ node hỏng dùng chung cơ chế với V12-03.
+- **Kết quả (đã xong, kit 1.8.0):** đề xuất "bật `release` cho `gate2`" bị compiler từ chối đúng luật của ADR-040: `gate2 approved`
+  dẫn tới `sync`, một node còn ghi worktree, nên commit lúc quyết định sẽ tranh với nó. Thay vào đó đổi thứ tự trong
+  `wf-task-delivery` và `wf-task-delivery-plus`: `review`/`quality` → `sync` → `gate2` (có `release: {commit: OFFERED}`) → `END`.
+  Lỗi của `sync` nay xảy ra trước khi người duyệt, nên không còn kết quả đã duyệt nào bị mất; người duyệt xem cả tài liệu.
+  `run-task.sh` thêm `docs` vào `pathScopes` của scope WRITE cho `wf-task-delivery*` (`NO_SYNC_DOCS=1` để tắt), như
+  `split-tasks.sh` đã làm. Skill `flow.sync` v6 bỏ câu "đã được duyệt ở GATE 2". 11 scenario walk của bản plus cập nhật thứ tự;
+  `check-kit.sh` 79/79. Phần "chạy lại riêng node hỏng" làm ở V12-03.
 
 ### V12-03 — Chạy tiếp từ đúng node sau khi hết hạn mức (UX-15, UX-17)
 

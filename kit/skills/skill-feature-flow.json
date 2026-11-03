@@ -109,11 +109,11 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Your stage: SYNC. The task's code has been approved at GATE 2. You may create or change files only in docs/; do NOT change code or tests any more. Update the task's frame.md: mark each AC that is done and its test. If the task contains an architecture decision (from 03-design.md or arising during the build), create docs/adr/NNNN-<short-name>.md (NNNN is the next number in docs/adr) with the sections Context, Decision, Consequences, Status: Accepted. If how to run/configure changed, update the matching documents in docs/.",
+      "instruction": "Your stage: SYNC. The task's code has passed the checks and the review; the human approval (GATE 2) comes right after you and sees your documents too. You may create or change files only in docs/; do NOT change code or tests any more. Update the task's frame.md: mark each AC that is done and its test. If the task contains an architecture decision (from 03-design.md or arising during the build), create docs/adr/NNNN-<short-name>.md (NNNN is the next number in docs/adr) with the sections Context, Decision, Consequences, Status: Accepted. If how to run/configure changed, update the matching documents in docs/.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v5",
+        "revision": "v6",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     }
