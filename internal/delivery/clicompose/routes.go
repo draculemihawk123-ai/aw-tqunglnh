@@ -161,6 +161,16 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryCheck(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "check"),
+		// V12-29 (ADR-061): the repository secret store.
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositorySecretList(ctx, catalog.SecretDependencies{Dependencies: deps(d), Keys: d.SecretKeys}, a, s.Stdout, s.Stderr)
+		}, "repository", "secret", "list"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositorySecretSet(ctx, catalog.SecretDependencies{Dependencies: deps(d), Keys: d.SecretKeys}, a, s.Stdin, s.Stdout, s.Stderr)
+		}, "repository", "secret", "set"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositorySecretDelete(ctx, catalog.SecretDependencies{Dependencies: deps(d), Keys: d.SecretKeys}, a, s.Stdout, s.Stderr)
+		}, "repository", "secret", "delete"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryReadinessShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "readiness", "show"),

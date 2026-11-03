@@ -132,9 +132,11 @@ type Deps struct {
 	NewManifestPublisher func(manifests map[string]string) (ports.ManifestPublisher, error)
 	// ForgeClient (V12-28) is the GitHub CLI client of `repository-workspace push/pull-request/merge`.
 	ForgeClient ports.ForgeClient
-	Isolation   ports.IsolationEnforcementChecker
-	Agents      *agentregistry.Registry
-	Config      config.Config
+	// SecretKeys (V12-29) protects the repository secret store's data key (`repository secret ...`).
+	SecretKeys ports.SecretKeyProvider
+	Isolation  ports.IsolationEnforcementChecker
+	Agents     *agentregistry.Registry
+	Config     config.Config
 	// ProviderProbe is what `aw doctor` runs the provider executable's
 	// version probe through (V9-05, NeedProviderProbe); nil skips that check.
 	ProviderProbe appdoctor.ProviderProbe

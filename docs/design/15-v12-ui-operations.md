@@ -633,6 +633,16 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
 - **Mục tiêu:** kho secret theo repository, tiêm vào gate và vào lúc chạy ứng dụng (V12-30), che giá trị khi hiển thị, không bao
   giờ đưa vào prompt của agent.
 - **Ràng buộc:** mã hóa khi lưu, phạm vi truy cập, tương tác với `env-allowlist`.
+- **Kết quả (đã xong, ADR-061):** bảng `repository_secrets` (migration 0062) lưu ciphertext AES-256-GCM (AAD = repository + tên);
+  khóa dữ liệu ngoài DB qua `internal/adapters/secretkey`: DPAPI (Windows), Keychain (macOS, lệnh `security`), Secret Service (Linux,
+  `secret-tool`, giá trị qua stdin) hoặc file `0600`. App `secretstore` (List chỉ tên, Set, Delete, ParseDotEnv, Resolver theo repository
+  rồi tới biến môi trường); COMMAND/gate giải qua bộ giải theo repository (repo cwd trước), giá trị vào bộ che như trước. Route
+  `listRepositorySecrets`, `setRepositorySecrets` (giá trị hoặc `.env`), `deleteRepositorySecret` — hash lệnh chỉ phủ tên; CLI
+  `aw repository secret list|set|delete` (giá trị từ stdin/file, `--env-file`). Giao diện: nút **Secrets** trên từng repository
+  (không bao giờ hiện giá trị; nhập `.env` chỉ hiện tên). Docs: operator 03/05/08. Test: `secretstore_test.go` (SQLite thật, không có
+  giá trị rõ trong DB, giải theo repo, AAD chặn đổi tên, `.env`), `file_test.go`, `secret_scope_internal_test.go`,
+  `RepositorySecretsDialog.test.tsx`; DPAPI và Keychain chỉ được biên dịch (GOOS=windows/darwin), chưa chạy trên máy thật. Ghi chú:
+  trên macOS khóa được đưa cho `security` qua argv trong lúc tạo lần đầu (lệnh không đọc mật khẩu từ stdin).
 
 ### V12-30 — Chạy ứng dụng của worktree để QA tay (UX-32)
 

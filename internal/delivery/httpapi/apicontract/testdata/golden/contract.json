@@ -757,6 +757,36 @@
       }
     },
     {
+      "operationId": "deleteRepositorySecret",
+      "method": "POST",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/secrets/{name}/delete",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "secretstore.SetResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Names",
+            "jsonTag": "names",
+            "type": "[]string"
+          },
+          {
+            "name": "Removed",
+            "jsonTag": "removed,omitempty",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "diffDefinitionVersions",
       "method": "GET",
       "path": "/definitions/versions/diff",
@@ -3572,6 +3602,36 @@
       }
     },
     {
+      "operationId": "listRepositorySecrets",
+      "method": "GET",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/secrets",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "secretstore.SecretList",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Protection",
+            "jsonTag": "protection",
+            "type": "string"
+          },
+          {
+            "name": "Secrets",
+            "jsonTag": "secrets",
+            "type": "[]secretstore.SecretName"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "listWorkItemKanban",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/kanban",
@@ -5509,6 +5569,47 @@
             "name": "Version",
             "jsonTag": "version,omitempty",
             "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setRepositorySecrets",
+      "method": "POST",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/secrets",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "secrets.SetRequest",
+        "fields": [
+          {
+            "name": "Values",
+            "jsonTag": "values,omitempty",
+            "type": "map[string]string"
+          },
+          {
+            "name": "DotEnv",
+            "jsonTag": "dotEnv,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "secretstore.SetResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Names",
+            "jsonTag": "names",
+            "type": "[]string"
+          },
+          {
+            "name": "Removed",
+            "jsonTag": "removed,omitempty",
+            "type": "bool"
           }
         ]
       }

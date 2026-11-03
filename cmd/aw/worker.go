@@ -21,6 +21,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretenv"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
@@ -42,6 +43,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	"github.com/taQuangLing/agent-workflow/internal/app/repositoryprobe"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/app/secretstore"
 	appwork "github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspaceprovision"
@@ -328,7 +330,9 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	deps := workerDeps{
 		store: store, uow: uow, ids: idsource.Random{}, clk: clock.System{},
 		artifacts: artifacts, provider: provider, supervisor: process.NewSupervisor(),
-		secrets: secretenv.NewResolver(), agents: agents, isolation: process.NewIsolationChecker(),
+		// V12-29 (ADR-061): the repository secret store first, then the worker's environment.
+		secrets: secretstore.Resolver{Deps: secretstore.Deps{UnitOfWork: uow, Keys: secretkey.New(opts.artifactRoot)}, Fallback: secretenv.NewResolver()},
+		agents:  agents, isolation: process.NewIsolationChecker(),
 		execConfig: process.NewRuntimeExecutionConfigProvider(cfg), matcher: matcher, events: events,
 		prober: prober, catalog: projection.NewCatalog(),
 		reaperInterval: opts.reaperInterval, sweepInterval: opts.sweepInterval,

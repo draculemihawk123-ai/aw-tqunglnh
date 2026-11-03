@@ -336,6 +336,17 @@ export function createWorkspacePullRequest(projectId: string, repositoryWorkspac
   return request<CreateWorkspacePullRequestResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/pull-request`, body, opts);
 }
 
+export interface DeleteRepositorySecretResponse {
+  repositoryId: string;
+  names: string[];
+  removed?: boolean;
+}
+
+// POST /projects/{projectId}/repositories/{repositoryId}/secrets/{name}/delete (scope: PROJECT)
+export function deleteRepositorySecret(projectId: string, repositoryId: string, name: string, body: unknown, opts: RequestOptions = {}): Promise<DeleteRepositorySecretResponse> {
+  return request<DeleteRepositorySecretResponse>("POST", `/projects/${projectId}/repositories/${repositoryId}/secrets/${name}/delete`, body, opts);
+}
+
 export interface DiffDefinitionVersionsResponse {
   a: unknown;
   b: unknown;
@@ -1160,6 +1171,17 @@ export function listReleaseSetsForFamily(projectId: string, familyId: string, op
   return request<ListReleaseSetsForFamilyResponse>("GET", `/projects/${projectId}/task-families/${familyId}/release-sets`, undefined, opts);
 }
 
+export interface ListRepositorySecretsResponse {
+  repositoryId: string;
+  protection: string;
+  secrets: unknown[];
+}
+
+// GET /projects/{projectId}/repositories/{repositoryId}/secrets (scope: PROJECT)
+export function listRepositorySecrets(projectId: string, repositoryId: string, opts: RequestOptions = {}): Promise<ListRepositorySecretsResponse> {
+  return request<ListRepositorySecretsResponse>("GET", `/projects/${projectId}/repositories/${repositoryId}/secrets`, undefined, opts);
+}
+
 export interface ListWorkItemKanbanResponse {
   items: unknown[];
   nextCursor?: string;
@@ -1812,6 +1834,22 @@ export interface SetProjectCommitTemplateResponse {
 // POST /projects/{id}/commit-template (scope: PROJECT)
 export function setProjectCommitTemplate(id: string, body: SetProjectCommitTemplateRequest, opts: RequestOptions = {}): Promise<SetProjectCommitTemplateResponse> {
   return request<SetProjectCommitTemplateResponse>("POST", `/projects/${id}/commit-template`, body, opts);
+}
+
+export interface SetRepositorySecretsRequest {
+  values?: Record<string, string>;
+  dotEnv?: string;
+}
+
+export interface SetRepositorySecretsResponse {
+  repositoryId: string;
+  names: string[];
+  removed?: boolean;
+}
+
+// POST /projects/{projectId}/repositories/{repositoryId}/secrets (scope: PROJECT)
+export function setRepositorySecrets(projectId: string, repositoryId: string, body: SetRepositorySecretsRequest, opts: RequestOptions = {}): Promise<SetRepositorySecretsResponse> {
+  return request<SetRepositorySecretsResponse>("POST", `/projects/${projectId}/repositories/${repositoryId}/secrets`, body, opts);
 }
 
 export interface SetWorkItemBudgetRequest {

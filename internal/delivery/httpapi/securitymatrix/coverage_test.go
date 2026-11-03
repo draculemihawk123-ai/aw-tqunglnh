@@ -71,6 +71,7 @@ var noCrossProjectProof = []string{
 	"componentPackAssignmentsList",
 	"createProjectDefinition",
 	"createRootWorkItem",
+	"deleteRepositorySecret", // V12-29: secretstore checks the repository belongs to the project (hidden otherwise)
 	"diffProjectDefinitionVersions",
 	"getApprovalRelease",
 	"getAttemptPrompt",         // V12-26: ReadAttemptPrompt refuses another project's attempt itself (not found)
@@ -92,6 +93,7 @@ var noCrossProjectProof = []string{
 	"listAttemptEvents",
 	"listProjectDefinitionVersions",
 	"listProjectDefinitions",
+	"listRepositorySecrets", // V12-29: as deleteRepositorySecret
 	"listWorkItemKanban",
 	"listNeedsYou", // V12-16: a project-wide read; scope is the path's project
 	"listWorkItems",
@@ -126,6 +128,7 @@ var noCrossProjectProof = []string{
 	"startWorkflowRun",
 	"submitWaitSignal",
 	"setProjectCommitTemplate", // V12-25: as getProjectCommitTemplate
+	"setRepositorySecrets",     // V12-29: as deleteRepositorySecret
 	"setWorkItemBudget",        // V12-23: resolves the project from the work item
 	"setWorkItemQueue",         // V12-19: resolves the project from the work item
 	"useNewCli",                // V12-05: resolves the project from the work item like recreateWorkItem

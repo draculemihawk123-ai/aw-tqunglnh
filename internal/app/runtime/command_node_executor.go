@@ -42,6 +42,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
@@ -552,11 +553,26 @@ func resolveCommandInvocation(
 	if !ok {
 		return nil, "", nil, fmt.Errorf("%w: cwd repository target %q is not in this node run's effective scope", ErrCommandInvocationUnresolvable, doc.CwdRepositoryTarget)
 	}
-	argv, env, err = resolveArgvAndSecrets(ctx, doc, mountByRepo, secrets)
+	argv, env, err = resolveArgvAndSecrets(ctx, doc, mountByRepo, secrets, doc.CwdRepositoryTarget)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	return argv, cwdMount.WorkingDirectory, env, nil
+}
+
+// secretRepositoryOrder is where a secret is looked up (V12-29): first, then the other repositories in scope by id.
+func secretRepositoryOrder(mountByRepo map[string]ports.AgentWorkspaceMount, first string) []string {
+	others := make([]string, 0, len(mountByRepo))
+	for id := range mountByRepo {
+		if id != first {
+			others = append(others, id)
+		}
+	}
+	sort.Strings(others)
+	if first == "" {
+		return others
+	}
+	return append([]string{first}, others...)
 }
 
 // mountsByRepositoryID is resolveCommandInvocation/resolveArgvAndSecrets's
@@ -593,8 +609,12 @@ func mountsByRepositoryID(mounts []ports.AgentWorkspaceMount) map[string]ports.A
 // resolves to a real repository mount) and GateNodeExecutor (V5-10, cwd
 // is always a fresh scratch directory instead) — cwd resolution is
 // deliberately NOT part of this function; each caller resolves its own.
+//
+// V12-29 (ADR-061): when secrets is a ports.ScopedSecretResolver, a secret is looked up in the repository store of firstRepository
+// (the COMMAND's cwd repository; empty for a gate) and then of every other repository in the effective scope, by id, before the
+// worker's environment.
 func resolveArgvAndSecrets(
-	ctx context.Context, doc command.CommandDocument, mountByRepo map[string]ports.AgentWorkspaceMount, secrets ports.SecretResolver,
+	ctx context.Context, doc command.CommandDocument, mountByRepo map[string]ports.AgentWorkspaceMount, secrets ports.SecretResolver, firstRepository string,
 ) (argv []string, env map[string]string, err error) {
 	argv = make([]string, 0, len(doc.Argv))
 	for i, element := range doc.Argv {
@@ -615,7 +635,13 @@ func resolveArgvAndSecrets(
 	if len(doc.SecretRefs) > 0 {
 		env = make(map[string]string, len(doc.SecretRefs))
 		for _, ref := range doc.SecretRefs {
-			value, resolveErr := secrets.Resolve(ctx, ref)
+			var value string
+			var resolveErr error
+			if scoped, ok := secrets.(ports.ScopedSecretResolver); ok {
+				value, resolveErr = scoped.ResolveScoped(ctx, secretRepositoryOrder(mountByRepo, firstRepository), ref)
+			} else {
+				value, resolveErr = secrets.Resolve(ctx, ref)
+			}
 			if resolveErr != nil {
 				return nil, nil, fmt.Errorf("%w: secret %q: %v", ErrCommandInvocationUnresolvable, ref, resolveErr)
 			}

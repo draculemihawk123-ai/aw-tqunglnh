@@ -247,7 +247,7 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: input tree of gate attempt %s: %w", req.AttemptID, err)
 	}
 
-	argv, env, err := resolveArgvAndSecrets(ctx, inputs.commandDoc, mountsByRepositoryID(resolved.mounts), e.secrets)
+	argv, env, err := resolveArgvAndSecrets(ctx, inputs.commandDoc, mountsByRepositoryID(resolved.mounts), e.secrets, "")
 	if err != nil {
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,

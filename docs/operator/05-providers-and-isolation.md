@@ -73,6 +73,33 @@ its own declared repository scope (verified: [01-quickstart.md](01-quickstart.md
 document omits it and the run still succeeds, since the MACHINE_GATE example never touches a repository at
 all).
 
+## Repository secrets (V12-29, ADR-061)
+
+A value a repository's gates, commands or QA app need (a DB password, a storage key) belongs in the **repository secret
+store**, not in a file of the repository. Project overview → a repository's **Secrets**, or:
+
+```bash
+printf %s "$DB_PASSWORD" | aw repository secret set --project-id <p> --name CHOCHUYENNHA_DB_PASSWORD <repositoryId>
+aw repository secret set --project-id <p> --env-file backend/.env <repositoryId>      # every NAME=value, once
+aw repository secret list --project-id <p> <repositoryId>                            # names only
+aw repository secret delete --project-id <p> --name R2_KEY <repositoryId>
+```
+
+- A value is read from stdin or a file, never from the command line (argv is visible to every user of the machine), and
+  no read ever returns it: the UI and the CLI show names only. Importing a `.env` shows its names to confirm and does not
+  keep the file. A Spring application reads such a variable directly (`${CHOCHUYENNHA_DB_PASSWORD}`), so there is no
+  `.properties` import.
+- Values are encrypted (AES-256-GCM, bound to the repository and the name) under a data key kept **outside the database**,
+  protected by the operating system: Windows **DPAPI** (only this Windows user on this machine), macOS **Keychain**, Linux
+  **Secret Service** when one answers, otherwise a `secret-store.key` file (mode 0600) in `--artifact-root`. `aw serve`,
+  `aw worker` and the CLI use the same key when given the same `--artifact-root`.
+- A COMMAND's or gate's `secretRefs` are looked up in the store of its cwd repository first, then of the other repositories
+  in the node's scope, then — as before — in the worker's environment. A secret of one repository is never given to a
+  command that does not run in it. A resolved value is added to that execution's redaction, and never reaches a prompt, a
+  context snapshot, evidence or a log.
+- `--env-allowlist` still decides which inherited environment variables reach a process; store secrets are given by name,
+  in addition.
+
 ## Env allowlist
 
 A spawned provider or command process inherits NOTHING from the worker's own process environment by default.

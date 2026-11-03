@@ -12,6 +12,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -51,6 +52,10 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 	}
 	// V12-28: the machine's GitHub CLI (AW_GH picks another binary).
 	deps.ForgeClient = github.Client{Executable: os.Getenv("AW_GH")}
+	// V12-29: the same data key `aw serve` and `aw worker` use (it follows --artifact-root).
+	if strings.TrimSpace(opts.ArtifactRoot) != "" {
+		deps.SecretKeys = secretkey.New(opts.ArtifactRoot)
+	}
 	var cleanups []func()
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {

@@ -69,6 +69,7 @@ import (
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
 	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
+	httpsecrets "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/secrets"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 	httpworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workspaceinspection"
 )
@@ -120,6 +121,8 @@ type Dependencies struct {
 	ManifestPublisher ports.ManifestPublisher
 	// ForgeClient (V12-28, ADR-060) is the GitHub CLI client for push/PR/merge. Nil: those routes answer UNAVAILABLE.
 	ForgeClient ports.ForgeClient
+	// SecretKeys (V12-29, ADR-061) protects the repository secret store's data key. Nil: setting a secret answers UNAVAILABLE.
+	SecretKeys ports.SecretKeyProvider
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -263,6 +266,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// and release/reconcile request routes.
 	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{}, deps.WorkspaceHeadAuditor, deps.Matcher)
 	httpapi.RegisterForgeRoutes(routes, deps.UnitOfWork, deps.WorkspaceHeadAuditor, deps.ForgeClient) // V12-28
+	httpsecrets.RegisterRoutes(routes, deps.UnitOfWork, deps.SecretKeys)                              // V12-29
 	// V6-10D: bounded source/diff/repository-log inspection routes, backed
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})

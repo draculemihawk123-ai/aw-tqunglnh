@@ -105,6 +105,8 @@ type Tx interface {
 	ProjectSettings() ProjectSettingsRepository
 	// Forge (V12-28, ADR-060) is the remote branches and pull requests aw created.
 	Forge() ForgeRepository
+	// Secrets (V12-29, ADR-061) is the repository secret store (ciphertext only).
+	Secrets() SecretsRepository
 	// AgentEvents is populated now (V5-08A, docs/design/07-v5-execution-evidence.md):
 	// the production, registry-normalized agent_events contract (see
 	// AgentEventsRepository's own doc comment, internal/app/ports/agentevent.go).

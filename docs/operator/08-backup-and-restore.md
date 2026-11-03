@@ -14,6 +14,11 @@ same way as `cmd/v6-gate`/`cmd/v8-security-gate`/`cmd/aw-release-build`.
 installation to a different machine, `backup` + `restore` there is the supported path; there is no concept of
 two installations staying in sync.
 
+**Repository secrets need their key (V12-29).** The secret store's values are encrypted under a key that is not in the
+database (DPAPI, Keychain, Secret Service, or `secret-store.key` in the artifact root). A backup restored on another machine
+or for another OS user cannot decrypt them: set them again there (`aw repository secret set --env-file …`). Treat a copied
+`secret-store.key` like the secrets themselves.
+
 > Taking a backup **before an upgrade**? Use the currently-running release's `aw-maintenance`, not the new
 > one — see [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md).
 
