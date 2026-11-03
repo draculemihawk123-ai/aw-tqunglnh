@@ -251,7 +251,7 @@ func workItemRoutes() []Route {
 		if d.WorkspaceReader != nil {
 			service.Inspection = appworkspaceinspection.New(d.UoW, d.WorkspaceReader)
 		}
-		return redo.Dependencies{UoW: d.UoW, Service: service, Now: d.Now}
+		return redo.Dependencies{UoW: d.UoW, Service: service, Now: d.Now, Agents: d.Agents}
 	}
 	return []Route{
 		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -263,6 +263,9 @@ func workItemRoutes() []Route {
 		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return redo.Preview(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "redo-preview"),
+		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured|NeedAgents, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.UseNewCLI(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "use-new-cli"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workitem.RunWorkItemList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "list"),

@@ -5078,6 +5078,87 @@
       }
     },
     {
+      "operationId": "useNewCli",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/use-new-cli",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.UseNewCLIRequest",
+        "fields": [
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "Redo",
+            "jsonTag": "redo,omitempty",
+            "type": "bool"
+          },
+          {
+            "name": "Reason",
+            "jsonTag": "reason,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "OutOfScope",
+            "jsonTag": "outOfScope,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "redo.UseNewCLIResponse",
+        "fields": [
+          {
+            "name": "PreviousAdapterBuildID",
+            "jsonTag": "previousAdapterBuildId",
+            "type": "string"
+          },
+          {
+            "name": "AdapterBuildID",
+            "jsonTag": "adapterBuildId",
+            "type": "string"
+          },
+          {
+            "name": "AdapterBuildExisted",
+            "jsonTag": "adapterBuildExisted",
+            "type": "bool"
+          },
+          {
+            "name": "WorkflowDefinitionID",
+            "jsonTag": "workflowDefinitionId",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionID",
+            "jsonTag": "workflowVersionId",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionNumber",
+            "jsonTag": "workflowVersionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "RepinnedNodes",
+            "jsonTag": "repinnedNodes",
+            "type": "[]string"
+          },
+          {
+            "name": "NewWorkItemID",
+            "jsonTag": "newWorkItemId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "NextStep",
+            "jsonTag": "nextStep,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "validateDefinitionDraft",
       "method": "POST",
       "path": "/definitions/{kind}/{id}/validate",

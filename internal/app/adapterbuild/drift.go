@@ -63,16 +63,41 @@ var (
 // transaction re-verifies" caller in this codebase (schedule.go's own
 // RuntimeExecutionConfigProvider.Resolve is the closest sibling).
 func VerifyNoDrift(ctx context.Context, executor ports.AgentExecutor, pinned adapterbuild.Build) error {
+	measured, err := MeasureCurrent(ctx, executor, pinned)
+	if err != nil {
+		return err
+	}
+	freshID, err := measured.Tuple.ID()
+	if err != nil {
+		return fmt.Errorf("%w: compute observed build identity: %v", ErrAdapterBuildDrifted, err)
+	}
+	if freshID != pinned.ID() {
+		return fmt.Errorf("%w: observed build %s, pinned build %s", ErrAdapterBuildDrifted, freshID, pinned.ID())
+	}
+	return nil
+}
+
+// Measured is what MeasureCurrent observed: the tuple the configured executable produces now and its capability manifest.
+type Measured struct {
+	Tuple    adapterbuild.CandidateTuple
+	Manifest adapterbuild.CapabilityManifest
+}
+
+// MeasureCurrent (V12-05) re-measures the executable pinned names — exactly what VerifyNoDrift compares — and returns the tuple
+// and manifest it produces now, so a caller can register it as the new build ("Use the new CLI"). ExecutablePath and
+// ConfigIdentity are carried over from pinned. Real I/O; never inside a transaction. A measurement that could not be made is
+// ErrAdapterBuildProbeFailed.
+func MeasureCurrent(ctx context.Context, executor ports.AgentExecutor, pinned adapterbuild.Build) (Measured, error) {
 	pinnedTuple := pinned.Tuple()
 
 	contentHash, err := HashExecutableFile(pinnedTuple.ExecutablePath)
 	if err != nil {
-		return fmt.Errorf("%w: measure executable %q: %v", ErrAdapterBuildProbeFailed, pinnedTuple.ExecutablePath, err)
+		return Measured{}, fmt.Errorf("%w: measure executable %q: %v", ErrAdapterBuildProbeFailed, pinnedTuple.ExecutablePath, err)
 	}
 
 	capabilities, err := probeCapabilities(ctx, executor)
 	if err != nil {
-		return fmt.Errorf("%w: probe capabilities of %q (%d attempts): %v", ErrAdapterBuildProbeFailed, pinnedTuple.ExecutablePath, ProbeAttempts, err)
+		return Measured{}, fmt.Errorf("%w: probe capabilities of %q (%d attempts): %v", ErrAdapterBuildProbeFailed, pinnedTuple.ExecutablePath, ProbeAttempts, err)
 	}
 	manifest := adapterbuild.CapabilityManifest{
 		SupportsStart:       capabilities.SupportsStart,
@@ -82,27 +107,22 @@ func VerifyNoDrift(ctx context.Context, executor ports.AgentExecutor, pinned ada
 	}
 	_, manifestHash, err := adapterbuild.HashCapabilityManifest(manifest)
 	if err != nil {
-		return fmt.Errorf("%w: hash observed capability manifest: %v", ErrAdapterBuildDrifted, err)
+		return Measured{}, fmt.Errorf("%w: hash observed capability manifest: %v", ErrAdapterBuildDrifted, err)
 	}
 
-	freshTuple := adapterbuild.CandidateTuple{
-		ProviderKey:            pinnedTuple.ProviderKey,
-		ExecutablePath:         pinnedTuple.ExecutablePath,
-		ExecutableContentHash:  contentHash,
-		ProtocolVersion:        capabilities.ProtocolVersion,
-		CapabilityManifestHash: manifestHash,
-		OS:                     runtime.GOOS,
-		Toolchain:              runtime.Version(),
-		ConfigIdentity:         pinnedTuple.ConfigIdentity,
-	}
-	freshID, err := freshTuple.ID()
-	if err != nil {
-		return fmt.Errorf("%w: compute observed build identity: %v", ErrAdapterBuildDrifted, err)
-	}
-	if freshID != pinned.ID() {
-		return fmt.Errorf("%w: observed build %s, pinned build %s", ErrAdapterBuildDrifted, freshID, pinned.ID())
-	}
-	return nil
+	return Measured{
+		Tuple: adapterbuild.CandidateTuple{
+			ProviderKey:            pinnedTuple.ProviderKey,
+			ExecutablePath:         pinnedTuple.ExecutablePath,
+			ExecutableContentHash:  contentHash,
+			ProtocolVersion:        capabilities.ProtocolVersion,
+			CapabilityManifestHash: manifestHash,
+			OS:                     runtime.GOOS,
+			Toolchain:              runtime.Version(),
+			ConfigIdentity:         pinnedTuple.ConfigIdentity,
+		},
+		Manifest: manifest,
+	}, nil
 }
 
 // probeCapabilities runs executor.Capabilities up to ProbeAttempts times, waiting ProbeRetryDelay between tries.

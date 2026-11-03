@@ -22,6 +22,23 @@ and each subcommand's own `-h` for the exact flags; this is a genuinely differen
 `--claude-executable`/`--codex-executable` process flags above (those register the provider AT ALL; adapter
 builds are the specific, versioned capability snapshot a workflow pins to).
 
+### The provider CLI updated itself: **Use the new CLI** (V12-05)
+
+When the CLI changes (Claude updates itself), every AGENT node pinned to the old build is blocked `ADAPTER_BUILD_DRIFT`. On the
+task page the drift blocker has a **Use the new CLI** action (CLI: `aw work-item use-new-cli <workItemId> --node-run-id <nodeRunId>
+[--redo --reason <text>] [--out-of-scope KEEP|PARK|PARK_ALL]`). After your confirmation aw:
+
+1. measures the executable the node is pinned to as it is now and registers that build (`aw adapter list` shows it);
+2. publishes a new version of the run's workflow definition in which every AGENT node pinned to the old build pins the new one
+   (nothing else in the document changes);
+3. with **Then redo this task** (`--redo`), redoes the work item on that version — only when its run has finished. A run that is
+   still live keeps its old pin (aw never repins a running run): the result then says to cancel the run and use **Redo with Latest
+   Version**.
+
+A CLI that still measures exactly as the pinned build is refused (`409`, "retry the blocked node instead"). After you republish the
+project's definitions with the kit (`aw-publish.py`), its workflow is pinned the usual way again. Since V12-05 **Redo with Latest
+Version** also shows after a run was cancelled (the buttons come from `aw work-item redo-preview` when the card shows no run).
+
 ## Isolation tiers
 
 Two values (`internal/domain/policy/policy.go`):

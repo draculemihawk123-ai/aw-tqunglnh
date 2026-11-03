@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
+	"github.com/taQuangLing/agent-workflow/internal/app/cliupgrade"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/workitemredo"
@@ -26,14 +28,17 @@ type Dependencies struct {
 	Service workitemredo.Service
 	// Now overrides the envelope's time source; nil in production.
 	Now func() time.Time
+	// Agents (V12-05) measures the provider CLI for `work-item use-new-cli`.
+	Agents *agentregistry.Registry
 }
 
 // Command types, byte-identical to the literals internal/delivery/httpapi/redo passes, so an HTTP call and a CLI call hash and replay
 // the same way.
 const (
-	commandTypeRetry    = "RetryWorkItem"
-	commandTypeRecreate = "RecreateWorkItem"
-	appOpPreview        = "GetWorkItemRedoPreview"
+	commandTypeRetry     = "RetryWorkItem"
+	commandTypeRecreate  = "RecreateWorkItem"
+	commandTypeUseNewCLI = "UseNewCli"
+	appOpPreview         = "GetWorkItemRedoPreview"
 )
 
 func init() {
@@ -44,6 +49,10 @@ func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"work-item", "recreate"}, Scope: cli.ScopeProject,
 		AppOperation: commandTypeRecreate, HTTPOperationID: "recreateWorkItem",
+	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"work-item", "use-new-cli"}, Scope: cli.ScopeProject,
+		AppOperation: commandTypeUseNewCLI, HTTPOperationID: "useNewCli",
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"work-item", "redo-preview"}, Scope: cli.ScopeProject,
@@ -189,6 +198,66 @@ func Recreate(ctx context.Context, deps Dependencies, args []string, stdout, std
 		return deps.Service.Recreate(ctx, envelope.Command, workitemredo.RecreateRequest{
 			ProjectID: projectID, WorkItemID: workItemID, Reason: *reason, Note: *note, CarryMessages: *carry, OutOfScope: *outOfScope,
 		})
+	})
+	if err != nil {
+		return err
+	}
+	return cli.EncodeCommandResult(stdout, cli.ResultEnvelope{
+		IdempotencyKey: envelope.Command.IdempotencyKey, Replayed: dispatched.Replayed, Result: dispatched.Result,
+	})
+}
+
+type useNewCLIHash struct {
+	WorkItemID string `json:"workItemId"`
+	NodeRunID  string `json:"nodeRunId"`
+	Redo       bool   `json:"redo"`
+	Reason     string `json:"reason"`
+	OutOfScope string `json:"outOfScope"`
+}
+
+// UseNewCLI implements `aw work-item use-new-cli <workItemId> --node-run-id <id> [--redo --reason <text>] [--out-of-scope ...]`
+// (V12-05, ADR-048): measure the provider CLI the drift-blocked node is pinned to, register that build, publish the workflow
+// again pinning it, and with --redo redo the work item on that version.
+func UseNewCLI(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("work-item use-new-cli", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	principalConfigPath := cli.BindPrincipalFlag(fs)
+	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
+	nodeRunID := fs.String("node-run-id", "", "the node run blocked by ADAPTER_BUILD_DRIFT (required)")
+	redoFlag := fs.Bool("redo", false, "also redo the work item with the new workflow version once its run has finished")
+	reason := fs.String("reason", "", "why the work item is redone (required with --redo)")
+	outOfScope := fs.String("out-of-scope", "", "with --redo: KEEP, PARK or PARK_ALL for files a previous run left in the worktree")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" || strings.TrimSpace(*nodeRunID) == "" {
+		return usageErrorf("usage: aw work-item use-new-cli <workItemId> --node-run-id <nodeRunId> [--redo --reason <text>] [--out-of-scope KEEP|PARK|PARK_ALL]")
+	}
+	if *redoFlag && strings.TrimSpace(*reason) == "" {
+		return usageErrorf("--reason is required with --redo")
+	}
+	workItemID := fs.Arg(0)
+	principal, err := loadPrincipal(*principalConfigPath)
+	if err != nil {
+		return err
+	}
+	projectID, err := loadWorkItemProjectID(ctx, deps.UoW, workItemID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(useNewCLIHash{WorkItemID: workItemID, NodeRunID: *nodeRunID, Redo: *redoFlag, Reason: *reason, OutOfScope: *outOfScope})
+	if err != nil {
+		return err
+	}
+	envelope := cli.BuildEnvelope(cli.EnvelopeRequest{
+		Principal: principal, CommandType: commandTypeUseNewCLI, Scope: ports.ProjectScope(projectID),
+		NormalizedPayload: payload, IdempotencyKey: *idempotencyKey, IDSource: deps.Service.IDs, Now: deps.Now,
+	})
+	dispatched, err := cli.Dispatch(ctx, deps.UoW, envelope.Command, func(ctx context.Context) (any, error) {
+		return cliupgrade.UseNewCLI(ctx, cliupgrade.Deps{UnitOfWork: deps.UoW, IDs: deps.Service.IDs, Agents: deps.Agents, Redo: deps.Service},
+			envelope.Command, cliupgrade.Request{
+				ProjectID: projectID, WorkItemID: workItemID, NodeRunID: *nodeRunID, Redo: *redoFlag, Reason: *reason, OutOfScope: *outOfScope,
+			})
 	})
 	if err != nil {
 		return err

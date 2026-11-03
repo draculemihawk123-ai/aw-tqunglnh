@@ -184,6 +184,13 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
 - **Mục tiêu:** trên node bị chặn vì drift có một thao tác "Use the new CLI and redo": đăng ký build mới, publish workflow
   version mới, recreate, có xác nhận. Nút Redo lấy từ cùng nguồn với `redo-preview`.
 - **Ràng buộc:** không tự repin run đang chạy; thao tác là lựa chọn rõ ràng của người vận hành.
+- **Kết quả (đã xong, ADR-048):** nguyên nhân hai nguồn lệch: nút chỉ đọc `validActions` của chẩn đoán run đang hiện trên thẻ; sau khi
+  hủy thẻ không còn run nên không có chẩn đoán. Nay khi thẻ không có run, nút Run Again / Redo lấy từ `getWorkItemRedoPreview`. Lệnh mới
+  `UseNewCli` (`POST /work-items/{id}/use-new-cli`, `aw work-item use-new-cli`, `internal/app/cliupgrade`): đo lại CLI của build đang ghim
+  (`adapterbuild.MeasureCurrent`), đăng ký build, publish version mới của workflow ghim build mới, tùy chọn redo (run còn sống thì trả
+  `nextStep`). Blocker drift có nút **Use the new CLI** kèm hộp thoại xác nhận. Test: `v5accept/cli_upgrade_test.go` (fake-claude thật,
+  SQLite thật: build mới, version 2 ghim build mới, run cũ không repin, replay), `TaskDetail.test.tsx`, `TaskDetail.redo.test.tsx`; route
+  inventory, security matrix, contract golden, generated.ts, UX doc.
 
 ### V12-06 — Vòng `size → simplify` không hội tụ (UX-26)
 

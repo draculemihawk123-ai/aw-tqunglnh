@@ -237,7 +237,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V11-10: run a failed task again / redo it with the newest workflow version, in one action each.
 	redohttp.RegisterRoutes(routes, redohttp.Dependencies{
-		UOW: deps.UnitOfWork, HeadAuditor: deps.WorkspaceHeadAuditor,
+		UOW: deps.UnitOfWork, HeadAuditor: deps.WorkspaceHeadAuditor, Agents: deps.Agents,
 		Service: workitemredo.Service{
 			RedoDeps: runtime.RedoDeps{
 				UnitOfWork: deps.UnitOfWork, ArtifactStore: deps.ArtifactStore, IDs: idsource.Random{}, Clock: clock.System{}, Matcher: deps.Matcher,

@@ -1643,6 +1643,30 @@ export function submitWaitSignal(runId: string, waitRegistrationId: string, body
   return request<SubmitWaitSignalResponse>("POST", `/runs/${runId}/wait-registrations/${waitRegistrationId}/signal`, body, opts);
 }
 
+export interface UseNewCliRequest {
+  nodeRunId: string;
+  redo?: boolean;
+  reason?: string;
+  outOfScope?: string;
+}
+
+export interface UseNewCliResponse {
+  previousAdapterBuildId: string;
+  adapterBuildId: string;
+  adapterBuildExisted: boolean;
+  workflowDefinitionId: string;
+  workflowVersionId: string;
+  workflowVersionNumber: number;
+  repinnedNodes: string[];
+  newWorkItemId?: string;
+  nextStep?: string;
+}
+
+// POST /work-items/{workItemId}/use-new-cli (scope: PROJECT)
+export function useNewCli(workItemId: string, body: UseNewCliRequest, opts: RequestOptions = {}): Promise<UseNewCliResponse> {
+  return request<UseNewCliResponse>("POST", `/work-items/${workItemId}/use-new-cli`, body, opts);
+}
+
 export interface ValidateDefinitionDraftRequest {
   content: string;
   format?: string;

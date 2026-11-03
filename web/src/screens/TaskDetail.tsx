@@ -13,14 +13,15 @@ import type { NavRoute } from '../components/shell/LeftNav';
 import {
   abandonReleaseSet, appendMessage, ApiError, approveScopeExpansion, cancelRun, cancelWorkItem, createReleaseSet,
   getReleaseSet, getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDetail, getRunDiagnostics,
-  getRunGraph, getRunTimeline, getScopeExpansionRequest, getTaskFamily, getWorkItem, getWorkItemProjectedDetail,
+  getRunGraph, getRunTimeline, getScopeExpansionRequest, getTaskFamily, getWorkItem, getWorkItemProjectedDetail, getWorkItemRedoPreview,
   getWorkspaceDiff, getWorkspaceRepositoryLog, getWorkspaceSetState, listArtifacts, listEvidence,
   listFamilyScopeExpansionRequests, listMessages, listReleaseSetsForFamily, rejectScopeExpansion, resolveApproval,
   requestReleaseSetLocalCommit, requestWorkspaceReconciliation, requestWorkspaceSetRelease, resolveWorkItemBlocker,
-  retryBlockedActivation, sealReleaseSet, startWorkflowRun,
+  retryBlockedActivation, sealReleaseSet, startWorkflowRun, useNewCli as requestUseNewCli,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
+import type { RedoPreview } from '../api/redo';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
 import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
@@ -104,6 +105,9 @@ function TaskHeader({
   const [resolveMode, setResolveMode] = useState<'RESOLVED' | 'WAIVED'>('RESOLVED');
   const [resolveReason, setResolveReason] = useState('');
   const [policyGrantRef, setPolicyGrantRef] = useState('');
+  // V12-05: the drift-blocked node whose provider CLI changed; the operator confirms "Use the new CLI".
+  const [newCliBlocker, setNewCliBlocker] = useState<BlockerDiagnostic | null>(null);
+  const [newCliRedo, setNewCliRedo] = useState(true);
   const { toasts, show, dismiss } = useToasts();
 
   const activeRunId = card?.activeRunId;
@@ -181,6 +185,20 @@ function TaskHeader({
     onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
   });
 
+  const useNewCliMutation = useMutation({
+    mutationFn: (b: BlockerDiagnostic) => requestUseNewCli(workItemId, {
+      nodeRunId: b.sourceNodeRunId!, redo: newCliRedo, reason: newCliRedo ? 'the provider CLI changed; redo on the new build' : undefined,
+    }, withSessionToken({ idempotencyKey: crypto.randomUUID() })),
+    onSuccess: result => {
+      setNewCliBlocker(null);
+      const base = `Registered the new CLI build and published workflow version ${result.workflowVersionNumber} (${result.repinnedNodes.join(', ')}).`;
+      if (result.newWorkItemId) show({ intent: 'success', message: `${base} The task was redone as ${result.newWorkItemId}.` });
+      else show({ intent: 'info', message: result.nextStep ? `${base} Next: ${result.nextStep}.` : base, duration: 0 });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
   const resolveBlockerMutation = useMutation({
     mutationFn: async () => {
       if (!resolvingBlocker || !activeRunId) throw new Error('no blocker selected');
@@ -218,8 +236,18 @@ function TaskHeader({
   const runValidActions = runDiagnostics?.validActions ?? [];
   const canCancelRun = !!activeRunId && runValidActions.some(a => a.operationId === 'cancelRun');
   // V11-10 (ADR-041): run a failed or cancelled task again, or redo it with the newest workflow version — both advertised by the server.
-  const canRetry = runValidActions.some(a => a.operationId === 'retryWorkItem');
-  const canRecreate = runValidActions.some(a => a.operationId === 'recreateWorkItem');
+  // V12-05 (UX-06): after a run was cancelled the card has no active run, so there are no run diagnostics and no
+  // validActions — the Redo button disappeared although `aw work-item redo-preview` said canRecreate. The preview is the
+  // same authority the two commands use, so it decides whenever the card shows no run.
+  const redoPreviewQuery = useQuery({
+    queryKey: ['workItemRedoPreview', workItemId],
+    queryFn: async () => (await getWorkItemRedoPreview(workItemId, withSessionToken())) as unknown as RedoPreview,
+    enabled: !isOffline && !activeRunId && !!workItem && workItem.status !== 'DONE' && workItem.status !== 'BACKLOG',
+    retry: false,
+  });
+  const fromPreview = !activeRunId && !!redoPreviewQuery.data;
+  const canRetry = runValidActions.some(a => a.operationId === 'retryWorkItem') || (fromPreview && !!redoPreviewQuery.data?.canRetry);
+  const canRecreate = runValidActions.some(a => a.operationId === 'recreateWorkItem') || (fromPreview && !!redoPreviewQuery.data?.canRecreate);
   const canCancelWorkItem = activeRunId
     ? runValidActions.some(a => a.operationId === 'cancelWorkItem')
     : !!workItem && cancelWorkItemEligibleFromStatus(workItem.status);
@@ -325,7 +353,9 @@ function TaskHeader({
                   ? [{ label: 'Resolve', onClick: () => { setResolvingBlocker(b); setResolveMode('RESOLVED'); setResolveReason(''); setPolicyGrantRef(''); }, disabled: isOffline }]
                   : b.validActions.some(a => a.operationId === 'retryBlockedActivation') && b.sourceNodeRunId
                   ? [
-                      { label: 'Retry', onClick: () => retryBlockedMutation.mutate(b), disabled: isOffline || retryBlockedMutation.isPending },
+                      ...(b.type === 'ADAPTER_BUILD_DRIFT'
+                        ? [{ label: 'Use the new CLI', onClick: () => { setNewCliBlocker(b); setNewCliRedo(true); }, disabled: isOffline }]
+                        : [{ label: 'Retry', onClick: () => retryBlockedMutation.mutate(b), disabled: isOffline || retryBlockedMutation.isPending }]),
                       { label: 'View in Graph & Timeline', onClick: () => onTabChange('task-graph', { projectId, taskId: workItemId }) },
                     ]
                   : []
@@ -406,6 +436,28 @@ function TaskHeader({
           </dl>
           <TextField label="Reason" required value={cancelReason} onChange={setCancelReason} placeholder="Why this run is being cancelled" />
           {cancelRunMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(cancelRunMutation.error)} /></div>}
+        </Dialog>
+      )}
+
+      {/* ── Use the new CLI (V12-05) ──────────────────────────────────── */}
+      {newCliBlocker && (
+        <Dialog
+          title="Use the new CLI"
+          description="The provider CLI no longer matches the build this run is pinned to. aw measures the CLI as it is now, registers that build and publishes a new version of this workflow pinning it. The current run keeps its old pin."
+          onClose={() => setNewCliBlocker(null)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setNewCliBlocker(null)} disabled={useNewCliMutation.isPending}>Not now</Button>
+              <Button intent="primary" loading={useNewCliMutation.isPending} disabled={isOffline} onClick={() => useNewCliMutation.mutate(newCliBlocker)}>Use the new CLI</Button>
+            </>
+          }
+        >
+          <p className="text-[12px] text-[#475569] mb-2">{newCliBlocker.reason}</p>
+          <label className="flex items-start gap-2 text-[13px]">
+            <input type="checkbox" checked={newCliRedo} onChange={e => setNewCliRedo(e.target.checked)} className="mt-1" />
+            <span>Then redo this task with the new version (only once its run has finished; otherwise cancel the run and use Redo with Latest Version)</span>
+          </label>
+          {useNewCliMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(useNewCliMutation.error)} /></div>}
         </Dialog>
       )}
 
@@ -715,7 +767,7 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
       } else if (result.alreadyRetried) {
         show({ intent: 'info', message: 'This activation was already retried by an earlier call.' });
       } else if (result.failureReason === 'ADAPTER_BUILD_DRIFT') {
-        show({ intent: 'danger', message: 'Retry cannot recover this adapter build drift. Use Cancel Run in the header above instead.', duration: 0 });
+        show({ intent: 'danger', message: 'Retry cannot recover this adapter build drift: the CLI changed. Use "Use the new CLI" on the blocker in the header above.', duration: 0 });
       } else {
         show({ intent: 'danger', message: `Retry still fails: ${result.failureReason}${result.failureDetail ? ' — ' + result.failureDetail : ''}`, duration: 0 });
       }
@@ -2521,6 +2573,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
     queryClient.invalidateQueries({ queryKey: ['runGraph', projectId, activeRunId] });
     queryClient.invalidateQueries({ queryKey: ['runTimeline', projectId, activeRunId] });
     queryClient.invalidateQueries({ queryKey: ['kanban', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['workItemRedoPreview', workItemId] });
   };
 
   return (

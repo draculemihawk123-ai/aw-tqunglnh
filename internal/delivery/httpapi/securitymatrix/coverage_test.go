@@ -118,6 +118,7 @@ var noCrossProjectProof = []string{
 	"retryWorkItem",
 	"startWorkflowRun",
 	"submitWaitSignal",
+	"useNewCli", // V12-05: resolves the project from the work item like recreateWorkItem
 	"validateProjectDefinitionDraft",
 	"watchProjectEvents",
 	"withdrawScopeExpansion",

@@ -15,13 +15,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
+	"github.com/taQuangLing/agent-workflow/internal/app/cliupgrade"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/app/workitemredo"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspacereconcile"
-	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // maxBodyBytes bounds a redo request body: a note and a reason, nothing else.
@@ -34,6 +36,8 @@ type Dependencies struct {
 	// HeadAuditor (V11-01) lets a command refuse early, with an explanation, when a worktree's HEAD is not the revision aw recorded.
 	// Nil skips that preflight.
 	HeadAuditor ports.WorkspaceHeadAuditor
+	// Agents (V12-05) measures the provider CLI for "Use the new CLI"; nil refuses that route with 503.
+	Agents *agentregistry.Registry
 }
 
 // RetryRequest is the JSON body of POST /work-items/{workItemId}/retry.
@@ -79,6 +83,11 @@ func RegisterRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodPost, Path: "/work-items/{workItemId}/retry", OperationID: "retryWorkItem",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: RetryRequest{}, ResponseSchema: RetryResponse{},
 		Handler: retryHandler(deps),
+	})
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/work-items/{workItemId}/use-new-cli", OperationID: "useNewCli",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: UseNewCLIRequest{}, ResponseSchema: UseNewCLIResponse{},
+		Handler: useNewCLIHandler(deps),
 	})
 	routes.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/work-items/{workItemId}/recreate", OperationID: "recreateWorkItem",
@@ -186,6 +195,76 @@ func recreateHandler(deps Dependencies) http.HandlerFunc {
 
 // prepareCommand requires the Idempotency-Key, decodes the body into dst and builds the command whose request hash covers hashed().
 // It writes the error response and returns false when any of that fails.
+// UseNewCLIRequest is POST /work-items/{workItemId}/use-new-cli's body (V12-05, ADR-048).
+type UseNewCLIRequest struct {
+	// NodeRunID is the node run blocked by ADAPTER_BUILD_DRIFT.
+	NodeRunID string `json:"nodeRunId"`
+	// Redo recreates the work item with the new workflow version when its run has finished (Reason is then required).
+	Redo       bool   `json:"redo,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	OutOfScope string `json:"outOfScope,omitempty"`
+}
+
+// UseNewCLIResponse is what the operation did.
+type UseNewCLIResponse struct {
+	cliupgrade.Result
+}
+
+type useNewCLIHash struct {
+	WorkItemID string `json:"workItemId"`
+	NodeRunID  string `json:"nodeRunId"`
+	Redo       bool   `json:"redo"`
+	Reason     string `json:"reason"`
+	OutOfScope string `json:"outOfScope"`
+}
+
+// useNewCLIHandler implements POST /work-items/{workItemId}/use-new-cli: measure the CLI the blocked node is pinned to, register
+// that build, publish the workflow again pinning it, and (with redo) redo the work item — internal/app/cliupgrade.
+func useNewCLIHandler(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		workItemID := r.PathValue("workItemId")
+		projectID, ok := resolveProject(w, ctx, deps, workItemID)
+		if !ok {
+			return
+		}
+		var body UseNewCLIRequest
+		cmd, ok := prepareCommand(w, r, projectID, "UseNewCli", &body, func() any {
+			return useNewCLIHash{WorkItemID: workItemID, NodeRunID: body.NodeRunID, Redo: body.Redo, Reason: body.Reason, OutOfScope: body.OutOfScope}
+		})
+		if !ok {
+			return
+		}
+		if strings.TrimSpace(body.NodeRunID) == "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.ErrorCodeInvalidRequest, "nodeRunId is required",
+				[]httpapi.ErrorDetail{{Field: "nodeRunId", Message: "is required"}})
+			return
+		}
+		if body.Redo && strings.TrimSpace(body.Reason) == "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.ErrorCodeInvalidRequest, "reason is required to redo",
+				[]httpapi.ErrorDetail{{Field: "reason", Message: "is required when redo is true"}})
+			return
+		}
+		result, err := cliupgrade.UseNewCLI(ctx, cliupgrade.Deps{
+			UnitOfWork: deps.UOW, IDs: deps.Service.IDs, Agents: deps.Agents, Redo: deps.Service,
+		}, cmd, cliupgrade.Request{
+			ProjectID: projectID, WorkItemID: workItemID, NodeRunID: body.NodeRunID, Redo: body.Redo, Reason: body.Reason, OutOfScope: body.OutOfScope,
+		})
+		switch {
+		case errors.Is(err, cliupgrade.ErrNotDriftBlocked), errors.Is(err, cliupgrade.ErrNoDrift):
+			httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
+			return
+		case errors.Is(err, cliupgrade.ErrNoProvider):
+			httpapi.WriteError(w, http.StatusServiceUnavailable, httpapi.ErrorCodeUnavailable, err.Error(), nil)
+			return
+		case err != nil:
+			writeRedoError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusCreated, UseNewCLIResponse{Result: result}, "")
+	}
+}
+
 func prepareCommand(w http.ResponseWriter, r *http.Request, projectID, commandType string, dst any, hashed func() any) (ports.Command, bool) {
 	ctx := r.Context()
 	idempotencyKey, err := httpapi.RequireIdempotencyKey(r)

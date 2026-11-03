@@ -325,6 +325,7 @@ chỉ icon) để phân biệt `CancelRun` / `CancelWorkItem` / `ResolveWorkItem
 | 14 | command | Chạy lại task đã hỏng hoặc bị hủy trên cùng WorkItem: gửi ghi chú, gỡ blocker của run, start run mới bằng version đã ghim | `retryWorkItem` | `aw work-item retry` | `RetryWorkItem` [ĐÃ CÓ: `internal/app/runtime/redo_work_item.go:RetryWorkItemRequest`] — một transaction, idempotent; file ngoài scope của run trước phải được chọn `Giữ` hoặc `Cất` | V11-10 |
 | 15 | command | Làm lại bằng version workflow mới nhất: hủy WorkItem cũ, tạo WorkItem mới cùng nội dung rồi start run | `recreateWorkItem` | `aw work-item recreate` | `RecreateWorkItem` [ĐÃ CÓ: `internal/app/runtime/redo_work_item.go:RecreateWorkItemRequest`] — Dialog xác nhận làm lại nêu version đang ghim và version mới nhất, chi phí các lần trước, cảnh báo từ lần thứ ba | V11-10 |
 | 16 | query | Xem trước chạy lại/làm lại: điều kiện, version, blocker sẽ gỡ, chi phí đã tiêu, file ngoài scope | `getWorkItemRedoPreview` | `aw work-item redo-preview` | `GetWorkItemRedoPreview` [ĐÃ CÓ: `internal/app/workitemredo/workitemredo.go:Service.Preview`] — chỉ đọc | V11-10 |
+| 17 | command | Dùng bản CLI mới cho node bị chặn vì drift: đo lại CLI, đăng ký build mới, publish workflow version mới ghim build đó, tùy chọn làm lại task | `useNewCli` | `aw work-item use-new-cli` | `UseNewCli` [ĐÃ CÓ: `internal/app/cliupgrade/cliupgrade.go:UseNewCLI`] — không repin run đang chạy; có xác nhận | V12-05 |
 
 ## 9. Screen 8 — Run graph & timeline (+ diagnostics/recovery)
 

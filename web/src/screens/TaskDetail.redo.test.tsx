@@ -85,6 +85,13 @@ describe('TaskDetailScreen — run again and redo (V11-10)', () => {
     expect(screen.queryByRole('button', { name: 'Redo with Latest Version' })).not.toBeInTheDocument();
   });
 
+  it('after a cancelled run (no run on the card) the buttons come from the redo preview (V12-05)', async () => {
+    setup({ card: { activeRunId: undefined, activeRunStatus: undefined, status: 'CANCELLED', runCount: 1 } });
+    expect(await screen.findByRole('button', { name: 'Redo with Latest Version' })).toBeInTheDocument();
+    expect(api.getRunDiagnostics).not.toHaveBeenCalled();
+    expect(api.getWorkItemRedoPreview).toHaveBeenCalledWith('wi-1', expect.anything());
+  });
+
   it('shows Run Again alone for a root work item (no redo is advertised)', async () => {
     setup({ validActions: ['retryWorkItem', 'cancelWorkItem'] });
     expect(await screen.findByRole('button', { name: 'Run Again' })).toBeInTheDocument();

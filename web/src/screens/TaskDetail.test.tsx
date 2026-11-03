@@ -15,7 +15,7 @@ vi.mock('../api/generated', async () => {
     ...actual,
     getWorkItem: vi.fn(), getTaskFamily: vi.fn(), getWorkItemProjectedDetail: vi.fn(), getRunDiagnostics: vi.fn(),
     cancelRun: vi.fn(), cancelWorkItem: vi.fn(), resolveWorkItemBlocker: vi.fn(),
-    getRunGraph: vi.fn(), getRunTimeline: vi.fn(), retryBlockedActivation: vi.fn(),
+    getRunGraph: vi.fn(), getRunTimeline: vi.fn(), retryBlockedActivation: vi.fn(), useNewCli: vi.fn(),
     getWorkspaceSetState: vi.fn(), getWorkspaceDiff: vi.fn(), getWorkspaceRepositoryLog: vi.fn(), requestWorkspaceReconciliation: vi.fn(),
     listReleaseSetsForFamily: vi.fn(), createReleaseSet: vi.fn(), sealReleaseSet: vi.fn(), abandonReleaseSet: vi.fn(),
     requestReleaseSetLocalCommit: vi.fn(), getReleaseSetLocalCommitStatus: vi.fn(), getReleaseSet: vi.fn(),
@@ -134,7 +134,7 @@ describe('TaskDetailScreen (V7-11)', () => {
     vi.mocked(api.getRunDiagnostics).mockResolvedValue({
       runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'BLOCKED', runState: 'WAITING',
       blockers: [{
-        blockerId: 'blk-2', type: 'ADAPTER_BUILD_DRIFT', state: 'OPEN', reason: 'Pinned adapter build drifted',
+        blockerId: 'blk-2', type: 'ADAPTER_PROBE_FAILED', state: 'OPEN', reason: 'Pinned adapter build drifted',
         sourceNodeRunId: 'nr-1', openedAt: '2026-09-26T00:00:00Z', version: 1, admissionReason: true, sourceNodeRunVersion: 3,
         validActions: [{ operationId: 'retryBlockedActivation', scopeKind: 'PROJECT', targetVersion: 3 }],
       }],
@@ -151,6 +151,40 @@ describe('TaskDetailScreen (V7-11)', () => {
     await waitFor(() => expect(api.retryBlockedActivation).toHaveBeenCalledWith('nr-1', { reason: 'retried from the task header' }, expect.anything()));
     await userEvent.click(screen.getByRole('button', { name: 'View in Graph & Timeline' }));
     expect(onTabChange).toHaveBeenCalledWith('task-graph', { projectId: 'proj-1', taskId: 'wi-1' });
+  });
+
+  it('a drift blocker offers Use the new CLI (V12-05) with a confirmation, not a plain Retry', async () => {
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'BLOCKED', version: 4, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1', status: 'BLOCKED' } as never) } as never);
+    vi.mocked(api.getRunDiagnostics).mockResolvedValue({
+      runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'BLOCKED', runState: 'WAITING',
+      blockers: [{
+        blockerId: 'blk-2', type: 'ADAPTER_BUILD_DRIFT', state: 'OPEN', reason: 'Pinned adapter build drifted',
+        sourceNodeRunId: 'nr-1', openedAt: '2026-09-26T00:00:00Z', version: 1, admissionReason: true, sourceNodeRunVersion: 3,
+        validActions: [{ operationId: 'retryBlockedActivation', scopeKind: 'PROJECT', targetVersion: 3 }],
+      }],
+      orphanedAttempts: [], orphanedAttemptsTruncated: false, providers: [], isolation: [], repositoryWorkspaces: [],
+      validActions: [],
+    } as never);
+    const onTabChange = vi.fn();
+    render(<TaskDetailScreen projectId="proj-1" projectName="platform-core" workItemId="wi-1" activeTab="task-overview" onTabChange={onTabChange} />);
+
+    expect(await screen.findByText('Pinned adapter build drifted')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    vi.mocked(api.useNewCli).mockResolvedValue({
+      previousAdapterBuildId: 'b-old', adapterBuildId: 'b-new', adapterBuildExisted: false, workflowDefinitionId: 'wf', workflowVersionId: 'wfv-2',
+      workflowVersionNumber: 2, repinnedNodes: ['build'], nextStep: 'cancel the run, then Redo with Latest Version',
+    } as never);
+    await userEvent.click(screen.getByRole('button', { name: 'Use the new CLI' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Use the new CLI' });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Use the new CLI' }));
+    await waitFor(() => expect(api.useNewCli).toHaveBeenCalledWith('wi-1',
+      { nodeRunId: 'nr-1', redo: true, reason: 'the provider CLI changed; redo on the new build' }, expect.anything()));
+    expect(await screen.findByText(/published workflow version 2/)).toBeInTheDocument();
   });
 
   it('done fixture: a terminal WorkItem with a terminal run offers neither Cancel Run nor Cancel WorkItem', async () => {
