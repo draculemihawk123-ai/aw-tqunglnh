@@ -9,6 +9,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -169,5 +170,35 @@ func TestProviderLoginRequired_BlocksTheNodeWithoutAutomaticResume(t *testing.T)
 		runtime.RetryBlockedActivationRequest{NodeRunID: nodeRunID, Actor: "operator-1", Reason: "signed in again"})
 	if err != nil || !result.Retried {
 		t.Fatalf("Retry = %+v, %v; want Retried", result, err)
+	}
+}
+
+// V12-16: what waits for a person shows up in Needs you — here the node blocked by the usage limit, with its blocker.
+func TestListNeedsYou_ListsOpenBlockers(t *testing.T) {
+	uow, ids, runID, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
+	ctx := context.Background()
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
+		State: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonProviderQuotaExceeded,
+		BlockedDetail: "You've hit your limit",
+	}}
+	if err := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil).Handle(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	var projectID string
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		projectID = string(run.ProjectID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := runtime.ListNeedsYou(ctx, uow, redact.NewMatcher(), projectID)
+	if err != nil {
+		t.Fatalf("ListNeedsYou: %v", err)
+	}
+	if list.Count != 1 || list.Items[0].Kind != runtime.NeedsYouBlocker || list.Items[0].Type != "PROVIDER_QUOTA_EXCEEDED" ||
+		list.Items[0].NodeRunID != nodeRunID || !strings.Contains(list.Items[0].Message, "hit your limit") {
+		t.Fatalf("needs you = %+v, want the one quota blocker", list)
 	}
 }

@@ -462,6 +462,11 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   Mỗi việc có hành động một chạm (lấy từ `validActions`), và menu có bộ đếm.
 - Thông báo của trình duyệt khi có việc mới. Kênh ngoài tùy chọn (email, webhook) để người vận hành làm việc từ xa vẫn biết khi
   cần duyệt hoặc run hỏng. Kênh ngoài gửi dữ liệu ra khỏi máy nên cần ADR và chỉ gửi tiêu đề kèm link, không gửi nội dung code.
+- **Kết quả (đã xong trừ kênh ngoài, ADR-052):** `runtime.ListNeedsYou` (`GET /projects/{id}/needs-you`, `aw run needs-you`): approval
+  `PENDING` (kèm outcome và version) và blocker `OPEN` của các task còn mở. Trang **Needs you** trong menu project, bộ đếm đỏ (hỏi lại 15 giây),
+  quyết định approval một chạm, "Open task" cho blocker (Run Again/Retry/Use the new CLI/Resolve ở trang task), thông báo trình duyệt khi
+  có mục mới. Kênh e-mail/webhook **chưa làm** (cần ADR riêng). Test: `quota_resume_test.go` (`ListNeedsYou`), `NeedsYou.test.tsx`; route
+  inventory, security matrix, contract golden, UX doc.
 
 ### V12-17 — Trình xem diff có bình luận (UX-31)
 

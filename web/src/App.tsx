@@ -21,6 +21,7 @@ import { AdapterBuildsScreen } from './screens/AdapterBuilds';
 import { Settings2 } from './components/icons';
 import { ControlTooltip } from './components/ControlTooltip';
 import { RepairAudit } from './screens/RepairAudit';
+import { NeedsYouScreen, needsYouQueryOptions, useNeedsYouNotifications } from './screens/NeedsYou';
 import { FIXTURE_TASK_ID, PROJECT_SCOPED_ROUTES, matchPath, pathFor } from './routes';
 
 const TASK_ROUTES: NavRoute[] = ['task-overview', 'task-graph', 'task-workspace', 'task-evidence', 'task-chat'];
@@ -120,6 +121,10 @@ export default function App() {
     navigate('project-overview', { projectId: selectedProjectId });
   };
 
+  // V12-16: what waits for a person in the current project — the menu count and browser notifications.
+  const needsYouQuery = useQuery(needsYouQueryOptions(project?.id, isOffline));
+  useNeedsYouNotifications(needsYouQuery.data?.items);
+
   const handleOpenTask = (workItemId: string) => {
     if (!project) return;
     navigate('task-overview', { projectId: project.id, taskId: workItemId });
@@ -151,6 +156,7 @@ export default function App() {
         ? <TaskDetailScreen projectId={project.id} projectName={project.name} workItemId={matched.taskId} activeTab={route} onTabChange={navigate} isOffline={isOffline} />
         : null;
     }
+    if (route === 'project-needs-you') return project ? <NeedsYouScreen projectId={project.id} isOffline={isOffline} onOpenTask={handleOpenTask} /> : null;
     if (route === 'project-definitions') return <DefinitionsScreen project={projectSummary} initialScope="project" isOffline={isOffline} />;
     if (route === 'global-definitions') return <DefinitionsScreen project={projectSummary} initialScope="global" isOffline={isOffline} />;
     if (route === 'system-diagnostics') return <RunDiagnosticsScreen isOffline={isOffline} />;
@@ -201,6 +207,7 @@ export default function App() {
           route={route}
           onNavigate={navigate}
           projectSelected={!!project}
+          badges={{ 'project-needs-you': needsYouQuery.data?.count ?? 0 }}
           taskSelected={taskSelected}
           collapsed={navCollapsed}
         />

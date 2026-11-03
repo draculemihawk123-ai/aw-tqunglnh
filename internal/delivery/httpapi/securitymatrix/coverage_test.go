@@ -88,6 +88,7 @@ var noCrossProjectProof = []string{
 	"listProjectDefinitionVersions",
 	"listProjectDefinitions",
 	"listWorkItemKanban",
+	"listNeedsYou", // V12-16: a project-wide read; scope is the path's project
 	"listWorkItems",
 	"markWorkItemReady",
 	"projectComponentsList",

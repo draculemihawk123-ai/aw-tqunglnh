@@ -57,6 +57,7 @@ const ROUTE_TABLE: RouteDef[] = [
   { pattern: `${UI_PREFIX}/projects/:projectId/board`, route: 'project-board' },
   { pattern: `${UI_PREFIX}/projects/:projectId/components`, route: 'project-components' },
   { pattern: `${UI_PREFIX}/projects/:projectId/definitions`, route: 'project-definitions' },
+  { pattern: `${UI_PREFIX}/projects/:projectId/needs-you`, route: 'project-needs-you' },
   { pattern: `${UI_PREFIX}/projects/:projectId`, route: 'project-overview' },
   { pattern: `${UI_PREFIX}/definitions`, route: 'global-definitions' },
   { pattern: `${UI_PREFIX}/system/adapters`, route: 'system-adapters' },
@@ -68,7 +69,7 @@ const ROUTE_TABLE: RouteDef[] = [
 export const FIXTURE_TASK_ID = 'wi-0018';
 
 export const PROJECT_SCOPED_ROUTES = new Set<NavRoute>([
-  'project-overview', 'project-board', 'project-components', 'project-definitions',
+  'project-overview', 'project-board', 'project-components', 'project-definitions', 'project-needs-you',
   'task-overview', 'task-graph', 'task-workspace', 'task-evidence', 'task-chat',
 ]);
 
@@ -92,6 +93,7 @@ export function pathFor(route: NavRoute, ids: { projectId?: string; taskId?: str
     case 'project-board': return `${UI_PREFIX}/projects/${requireId(route, 'projectId', ids.projectId)}/board`;
     case 'project-components': return `${UI_PREFIX}/projects/${requireId(route, 'projectId', ids.projectId)}/components`;
     case 'project-definitions': return `${UI_PREFIX}/projects/${requireId(route, 'projectId', ids.projectId)}/definitions`;
+    case 'project-needs-you': return `${UI_PREFIX}/projects/${requireId(route, 'projectId', ids.projectId)}/needs-you`;
     case 'task-overview': return `${UI_PREFIX}/projects/${requireId(route, 'projectId', ids.projectId)}/tasks/${requireId(route, 'taskId', ids.taskId)}`;
     case 'task-graph': return `${UI_PREFIX}/projects/${requireId(route, 'projectId', ids.projectId)}/tasks/${requireId(route, 'taskId', ids.taskId)}/graph`;
     case 'task-workspace': return `${UI_PREFIX}/projects/${requireId(route, 'projectId', ids.projectId)}/tasks/${requireId(route, 'taskId', ids.taskId)}/workspace`;

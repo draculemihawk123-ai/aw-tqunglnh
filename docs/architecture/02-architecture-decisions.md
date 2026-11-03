@@ -1486,9 +1486,23 @@ phải đọc bằng CLI; mỗi node chỉ có trạng thái, không có "nó đ
 
 **Hệ quả:** hai trường thêm vào, không phá vỡ client cũ. Không đổi tập mã lỗi §18 (stopReason là mã hiển thị, không phải mã lỗi).
 
-## 54. Baseline sau review thiết kế
+## 54. ADR-052 — "Needs you": một truy vấn đọc gom việc chờ người của project; thông báo trình duyệt; kênh ngoài để sau
 
-ADR-001…051 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-16, UX-28, UX-29):** việc chờ người (cổng duyệt, run hỏng, node bị chặn, câu hỏi cần thông tin) nằm rải rác trong từng task.
+
+**Quyết định:**
+
+1. Truy vấn `ListNeedsYou` (`GET /projects/{projectId}/needs-you`, `aw run needs-you`): mọi ApprovalRequest `PENDING` của run đang
+   `RUNNING`/`WAITING` (kèm outcome của node và version để quyết định) và mọi blocker `OPEN` của các WorkItem chưa `DONE`/`CANCELLED`,
+   mới nhất trước. Chỉ đọc; hành động là các lệnh có sẵn (`resolveApproval` ngay trên trang, các hành động khác ở trang task).
+2. Giao diện: trang Needs you, bộ đếm trên menu (hỏi lại 15 giây), thông báo của trình duyệt khi có mục mới (người vận hành bật trên trang).
+3. Kênh ngoài (e-mail, webhook) gửi dữ liệu ra khỏi máy: **không làm** trong ADR này; cần ADR riêng, và khi làm chỉ gửi tiêu đề kèm link.
+
+**Hệ quả:** route thứ 116, dòng UX Screen 7 số 18, parity.
+
+## 55. Baseline sau review thiết kế
+
+ADR-001…052 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1541,6 +1555,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-052 (V12-16) thêm truy vấn `ListNeedsYou` (cổng duyệt đang chờ và blocker đang mở của project), trang Needs you, bộ đếm và thông báo trình duyệt; kênh ngoài để ADR sau.
 - ADR-051 (V12-11) thêm `resultSummary` cho mỗi activation và `stopReason` có kiểu cho chẩn đoán run.
 - ADR-050 (V12-08): migration kiểm lại dưới khóa ghi (không còn tranh chấp khi bật serve và worker cùng lúc); lệnh `aw up`.
 - ADR-049 (V12-06) cho cạnh escalation của vòng dẫn tới node APPROVAL nằm trong vòng (ngoại lệ hẹp của ADR-036); kit dùng nó cho cổng `size-review`.

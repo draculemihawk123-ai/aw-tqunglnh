@@ -18,6 +18,29 @@ func init() {
 		Path: []string{"run", "diagnostics"}, Scope: cli.ScopeProject,
 		AppOperation: "GetRunDiagnostics", HTTPOperationID: "getRunDiagnostics",
 	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"run", "needs-you"}, Scope: cli.ScopeProject,
+		AppOperation: "ListNeedsYou", HTTPOperationID: "listNeedsYou",
+	})
+}
+
+// NeedsYou implements `aw run needs-you --project-id <id>` (V12-16): every approval waiting for a decision and every open blocker of
+// the project's tasks.
+func NeedsYou(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("run needs-you", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	projectID := cli.BindProjectFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*projectID) == "" {
+		return errors.New("cli: run needs-you: --project-id is required")
+	}
+	list, err := runtime.ListNeedsYou(ctx, deps.UOW, deps.Matcher, *projectID)
+	if err != nil {
+		return err
+	}
+	return cli.EncodeQueryResult(stdout, list)
 }
 
 // The DTOs below are hand-mapped, field-by-field, from

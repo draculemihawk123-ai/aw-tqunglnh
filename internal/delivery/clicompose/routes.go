@@ -336,6 +336,9 @@ func runRoutes() []Route {
 		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return run.Diagnostics(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "run", "diagnostics"),
+		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return run.NeedsYou(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "run", "needs-you"),
 		route(NeedUoW|NeedIsolation|NeedAgents, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return noderun.RetryBlocked(ctx, noderun.Dependencies{
 				UOW: d.UoW, IDs: d.ids(), Isolation: d.Isolation, Agents: d.Agents,

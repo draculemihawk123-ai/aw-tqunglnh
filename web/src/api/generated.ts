@@ -991,6 +991,17 @@ export function listMessages(projectId: string, workItemId: string, opts: Reques
   return request<ListMessagesResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/messages`, undefined, opts);
 }
 
+export interface ListNeedsYouResponse {
+  projectId: string;
+  count: number;
+  items: unknown[];
+}
+
+// GET /projects/{projectId}/needs-you (scope: PROJECT)
+export function listNeedsYou(projectId: string, opts: RequestOptions = {}): Promise<ListNeedsYouResponse> {
+  return request<ListNeedsYouResponse>("GET", `/projects/${projectId}/needs-you`, undefined, opts);
+}
+
 export interface ListProjectDefinitionVersionsResponse {
   items: unknown[];
 }

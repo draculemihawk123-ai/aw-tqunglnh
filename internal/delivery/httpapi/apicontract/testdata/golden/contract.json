@@ -3041,6 +3041,36 @@
       }
     },
     {
+      "operationId": "listNeedsYou",
+      "method": "GET",
+      "path": "/projects/{projectId}/needs-you",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.NeedsYou",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Count",
+            "jsonTag": "count",
+            "type": "int"
+          },
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]runtime.NeedsYouItem"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "listProjectDefinitionVersions",
       "method": "GET",
       "path": "/projects/{projectId}/definitions/{kind}/{id}/versions",

@@ -211,6 +211,7 @@ func PublicOperations() []PublicOperation {
 		{Name: "GetRunDiagnostics", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getRunDiagnostics")}, Symbol: runtimeApp + ".GetRunDiagnostics"},
 		{Name: "RetryBlockedActivation", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("retryBlockedActivation")}, Symbol: runtimeApp + ".RetryBlockedActivationHandler.Retry"},
 		{Name: "UseNewCli", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("useNewCli")}, Symbol: "internal/app/cliupgrade.UseNewCLI"},
+		{Name: "ListNeedsYou", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listNeedsYou")}, Symbol: runtimeApp + ".ListNeedsYou"},
 		{Name: "ResolveApproval", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("resolveApproval")}, Symbol: runtimeApp + ".ResolveApproval"},
 		{Name: "SignalWait", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("submitWaitSignal")}, Symbol: runtimeApp + ".SignalWait"},
 
