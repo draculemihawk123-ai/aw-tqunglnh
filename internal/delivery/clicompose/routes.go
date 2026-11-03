@@ -109,6 +109,9 @@ func catalogRoutes() []Route {
 	deps := func(d *Deps) catalog.Dependencies {
 		return catalog.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now, Prober: d.RepositoryProber}
 	}
+	runAppDeps := func(d *Deps) catalog.RunAppDependencies {
+		return catalog.RunAppDependencies{Dependencies: deps(d), Host: d.RunAppHost}
+	}
 	return []Route{
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectList(ctx, deps(d), a, s.Stdout, s.Stderr)
@@ -171,6 +174,22 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositorySecretDelete(ctx, catalog.SecretDependencies{Dependencies: deps(d), Keys: d.SecretKeys}, a, s.Stdout, s.Stderr)
 		}, "repository", "secret", "delete"),
+		// V12-30 (ADR-062): the Run app profile and sessions.
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryRunAppShow(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "run-app", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryRunAppSet(ctx, runAppDeps(d), a, s.Stdin, s.Stdout, s.Stderr)
+		}, "repository", "run-app", "set"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryWorkspaceRunAppStatus(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "run-app", "status"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryWorkspaceRunAppStart(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "run-app", "start"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryWorkspaceRunAppStop(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "run-app", "stop"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryReadinessShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "readiness", "show"),

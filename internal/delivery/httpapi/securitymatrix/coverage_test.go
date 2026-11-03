@@ -129,6 +129,8 @@ var noCrossProjectProof = []string{
 	"submitWaitSignal",
 	"setProjectCommitTemplate", // V12-25: as getProjectCommitTemplate
 	"setRepositorySecrets",     // V12-29: as deleteRepositorySecret
+	"getRunAppProfile",         // V12-30: runapp checks the repository belongs to the project (hidden otherwise)
+	"setRunAppProfile",         // V12-30: as getRunAppProfile
 	"setWorkItemBudget",        // V12-23: resolves the project from the work item
 	"setWorkItemQueue",         // V12-19: resolves the project from the work item
 	"useNewCli",                // V12-05: resolves the project from the work item like recreateWorkItem

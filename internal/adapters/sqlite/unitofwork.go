@@ -75,6 +75,7 @@ func (t *txAdapter) ProjectSettings() ports.ProjectSettingsRepository {
 }
 func (t *txAdapter) Forge() ports.ForgeRepository             { return forgeRepository{tx: t.tx} }
 func (t *txAdapter) Secrets() ports.SecretsRepository         { return secretsRepository{tx: t.tx} }
+func (t *txAdapter) RunApp() ports.RunAppRepository           { return runAppRepository{tx: t.tx} }
 func (t *txAdapter) AgentEvents() ports.AgentEventsRepository { return agentEventsRepository{tx: t.tx} }
 func (t *txAdapter) Checkpoints() ports.CheckpointsRepository {
 	return checkpointsRepository{tx: t.tx}

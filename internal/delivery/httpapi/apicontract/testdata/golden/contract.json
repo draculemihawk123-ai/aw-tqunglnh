@@ -2160,6 +2160,96 @@
       }
     },
     {
+      "operationId": "getRunAppProfile",
+      "method": "GET",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/run-app",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.ProfileView",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Profile",
+            "jsonTag": "profile,omitempty",
+            "type": "*runapp.Profile"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedBy",
+            "jsonTag": "updatedBy,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt,omitempty",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRunAppStatus",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.Status",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "WorkspaceState",
+            "jsonTag": "workspaceState",
+            "type": "string"
+          },
+          {
+            "name": "Profile",
+            "jsonTag": "profile",
+            "type": "runapp.ProfileView"
+          },
+          {
+            "name": "Session",
+            "jsonTag": "session,omitempty",
+            "type": "*runapp.SessionView"
+          },
+          {
+            "name": "Logs",
+            "jsonTag": "logs",
+            "type": "[]runapp.ProcessLog"
+          },
+          {
+            "name": "StartBlockers",
+            "jsonTag": "startBlockers",
+            "type": "[]string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getRunDetail",
       "method": "GET",
       "path": "/runs/{id}",
@@ -5615,6 +5705,57 @@
       }
     },
     {
+      "operationId": "setRunAppProfile",
+      "method": "POST",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/run-app",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "runapp.SetProfileRequest",
+        "fields": [
+          {
+            "name": "Profile",
+            "jsonTag": "profile",
+            "type": "runapp.Profile"
+          },
+          {
+            "name": "ExpectedVersion",
+            "jsonTag": "expectedVersion",
+            "type": "uint64"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "runapp.ProfileView",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Profile",
+            "jsonTag": "profile,omitempty",
+            "type": "*runapp.Profile"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedBy",
+            "jsonTag": "updatedBy,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt,omitempty",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "setWorkItemBudget",
       "method": "POST",
       "path": "/work-items/{workItemId}/budget",
@@ -5732,6 +5873,91 @@
       }
     },
     {
+      "operationId": "startRunApp",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/start",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.SessionView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Active",
+            "jsonTag": "active",
+            "type": "bool"
+          },
+          {
+            "name": "ProfileVersion",
+            "jsonTag": "profileVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "RequestedBy",
+            "jsonTag": "requestedBy",
+            "type": "string"
+          },
+          {
+            "name": "WorkerID",
+            "jsonTag": "workerId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "DeadlineAt",
+            "jsonTag": "deadlineAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "StartedAt",
+            "jsonTag": "startedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "EndedAt",
+            "jsonTag": "endedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "Problem",
+            "jsonTag": "problem,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "RepositoryWsID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "startWorkflowRun",
       "method": "POST",
       "path": "/work-items/{workItemId}/runs",
@@ -5804,6 +6030,91 @@
       "responseSchema": {
         "typeName": "struct {}",
         "opaque": true
+      }
+    },
+    {
+      "operationId": "stopRunApp",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/stop",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.SessionView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Active",
+            "jsonTag": "active",
+            "type": "bool"
+          },
+          {
+            "name": "ProfileVersion",
+            "jsonTag": "profileVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "RequestedBy",
+            "jsonTag": "requestedBy",
+            "type": "string"
+          },
+          {
+            "name": "WorkerID",
+            "jsonTag": "workerId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "DeadlineAt",
+            "jsonTag": "deadlineAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "StartedAt",
+            "jsonTag": "startedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "EndedAt",
+            "jsonTag": "endedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "Problem",
+            "jsonTag": "problem,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "RepositoryWsID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
       }
     },
     {

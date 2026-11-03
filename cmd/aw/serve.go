@@ -22,6 +22,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/runapphost"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
@@ -451,6 +452,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ManifestPublisher:          manifestPublisher,
 		ForgeClient:                github.Client{Executable: *ghExecutable},
 		SecretKeys:                 secretkey.New(*artifactRoot),
+		RunAppHost:                 runapphost.New(*artifactRoot),
 		UnitOfWork:                 uow,
 		Hygiene:                    appdefinitions.WarnPolicy{MaxResourceAge: time.Duration(*warnResourceAgeDays) * 24 * time.Hour, MaxHardConstraints: *warnHardConstraints},
 		ArtifactStore:              artifactStore,

@@ -731,6 +731,34 @@ export function getRepositoryWorkspaceState(projectId: string, repositoryWorkspa
   return request<GetRepositoryWorkspaceStateResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}`, undefined, opts);
 }
 
+export interface GetRunAppProfileResponse {
+  repositoryId: string;
+  profile?: unknown | null;
+  version: number;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+// GET /projects/{projectId}/repositories/{repositoryId}/run-app (scope: PROJECT)
+export function getRunAppProfile(projectId: string, repositoryId: string, opts: RequestOptions = {}): Promise<GetRunAppProfileResponse> {
+  return request<GetRunAppProfileResponse>("GET", `/projects/${projectId}/repositories/${repositoryId}/run-app`, undefined, opts);
+}
+
+export interface GetRunAppStatusResponse {
+  repositoryWorkspaceId: string;
+  repositoryId: string;
+  workspaceState: string;
+  profile: unknown;
+  session?: unknown | null;
+  logs: unknown[];
+  startBlockers: string[];
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app (scope: PROJECT)
+export function getRunAppStatus(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetRunAppStatusResponse> {
+  return request<GetRunAppStatusResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/run-app`, undefined, opts);
+}
+
 export interface GetRunDetailResponse {
   runId: string;
   projectId: string;
@@ -1852,6 +1880,24 @@ export function setRepositorySecrets(projectId: string, repositoryId: string, bo
   return request<SetRepositorySecretsResponse>("POST", `/projects/${projectId}/repositories/${repositoryId}/secrets`, body, opts);
 }
 
+export interface SetRunAppProfileRequest {
+  profile: unknown;
+  expectedVersion: number;
+}
+
+export interface SetRunAppProfileResponse {
+  repositoryId: string;
+  profile?: unknown | null;
+  version: number;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+// POST /projects/{projectId}/repositories/{repositoryId}/run-app (scope: PROJECT)
+export function setRunAppProfile(projectId: string, repositoryId: string, body: SetRunAppProfileRequest, opts: RequestOptions = {}): Promise<SetRunAppProfileResponse> {
+  return request<SetRunAppProfileResponse>("POST", `/projects/${projectId}/repositories/${repositoryId}/run-app`, body, opts);
+}
+
 export interface SetWorkItemBudgetRequest {
   budgetUsd?: number | null;
 }
@@ -1891,6 +1937,28 @@ export function setWorkItemQueue(workItemId: string, body: SetWorkItemQueueReque
   return request<SetWorkItemQueueResponse>("POST", `/work-items/${workItemId}/queue`, body, opts);
 }
 
+export interface StartRunAppResponse {
+  id: string;
+  state: string;
+  active: boolean;
+  profileVersion: number;
+  requestedBy: string;
+  workerId?: string;
+  deadlineAt: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  problem?: string;
+  createdAt: string;
+  repositoryWorkspaceId: string;
+  repositoryId: string;
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/start (scope: PROJECT)
+export function startRunApp(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<StartRunAppResponse> {
+  return request<StartRunAppResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/run-app/start`, body, opts);
+}
+
 export interface StartWorkflowRunRequest {
   workflowVersionId: string;
 }
@@ -1909,6 +1977,28 @@ export interface StartWorkflowRunResponse {
 // POST /work-items/{workItemId}/runs (scope: PROJECT)
 export function startWorkflowRun(workItemId: string, body: StartWorkflowRunRequest, opts: RequestOptions = {}): Promise<StartWorkflowRunResponse> {
   return request<StartWorkflowRunResponse>("POST", `/work-items/${workItemId}/runs`, body, opts);
+}
+
+export interface StopRunAppResponse {
+  id: string;
+  state: string;
+  active: boolean;
+  profileVersion: number;
+  requestedBy: string;
+  workerId?: string;
+  deadlineAt: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  problem?: string;
+  createdAt: string;
+  repositoryWorkspaceId: string;
+  repositoryId: string;
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/stop (scope: PROJECT)
+export function stopRunApp(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<StopRunAppResponse> {
+  return request<StopRunAppResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/run-app/stop`, body, opts);
 }
 
 export interface SubmitWaitSignalRequest {

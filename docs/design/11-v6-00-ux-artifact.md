@@ -428,6 +428,11 @@ màu (không chỉ màu); danh sách log điều hướng và phân trang đư�
 | 14 | command | Push nhánh family lên origin (đặt tên lần đầu, không force, cấm nhánh gốc và nhánh không do aw tạo) | `pushWorkspaceBranch` | `aw repository-workspace push` | `PushFamilyBranch` [ĐÃ CÓ: `internal/app/forgerelease/forgerelease.go:Push`] — mọi commit phải đã qua cổng APPROVAL; có xác nhận | V12-28 |
 | 15 | command | Tạo PR từ nhánh đã push (ready mặc định, có Draft) | `createWorkspacePullRequest` | `aw repository-workspace pull-request` | `CreateWorkspacePullRequest` [ĐÃ CÓ: `internal/app/forgerelease/forgerelease.go:CreatePullRequest`] | V12-28 |
 | 16 | command | Merge PR qua GitHub (merge commit mặc định) | `mergeWorkspacePullRequest` | `aw repository-workspace merge` | `MergeWorkspacePullRequest` [ĐÃ CÓ: `internal/app/forgerelease/forgerelease.go:Merge`] — check xanh nếu có, không có thì xác nhận "PR này không có CI"; head đúng commit đã push | V12-28 |
+| 17 | query | Hồ sơ Run app của repository (tiến trình, cổng, env, tên secret, preview, tự tắt) | `getRunAppProfile` | `aw repository run-app show` | `GetRunAppProfile` [ĐÃ CÓ: `internal/app/runapp/runapp.go:GetProfile`] | V12-30 |
+| 18 | command | Lưu hồ sơ Run app (argv, không chuỗi shell; thư mục con trong worktree) | `setRunAppProfile` | `aw repository run-app set` | `SetRunAppProfile` [ĐÃ CÓ: `internal/app/runapp/runapp.go:SetProfile`] — CAS theo version | V12-30 |
+| 19 | query | Trạng thái ứng dụng của worktree, log từng tiến trình (đã che secret), lý do chưa Start được | `getRunAppStatus` | `aw repository-workspace run-app status` | `GetRunAppStatus` [ĐÃ CÓ: `internal/app/runapp/runapp.go:GetStatus`] | V12-30 |
+| 20 | command | Start ứng dụng (worker chạy; một phiên mỗi repository; từ chối khi có write lease) | `startRunApp` | `aw repository-workspace run-app start` | `StartRunApp` [ĐÃ CÓ: `internal/app/runapp/runapp.go:Start`] — worker kiểm cổng trống, giải secret | V12-30 |
+| 21 | command | Stop ứng dụng (giết cả cây tiến trình) | `stopRunApp` | `aw repository-workspace run-app stop` | `StopRunApp` [ĐÃ CÓ: `internal/app/runapp/runapp.go:Stop`] | V12-30 |
 
 ## 11. Screen 10 — ReleaseSet & local commit
 

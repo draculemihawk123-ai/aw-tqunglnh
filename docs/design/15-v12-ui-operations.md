@@ -648,6 +648,19 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
 
 - Hồ sơ "Run app" theo repository (lệnh, cổng, biến môi trường lấy từ V12-29). Có Start/Stop, log, link mở preview; tự tắt khi
   đóng. Phải dọn tiến trình con để không để lại tiến trình mồ côi giữ cổng (đã gặp với backend và next dev).
+- **Kết quả (đã xong, ADR-062):** migration 0063 (`run_app_profiles`, `run_app_sessions` với chỉ mục duy nhất một phiên đang chạy mỗi
+  repository). App `internal/app/runapp`: hồ sơ (1–8 tiến trình, argv không chuỗi shell, thư mục con không ra ngoài worktree, cổng không
+  trùng, env, tên secret, URL preview http/https, tự tắt 1–1440 phút, mặc định 120), `SetProfile` (CAS theo version), `Start` (từ chối khi
+  chưa có hồ sơ, worktree không READY, có write lease, hay repository đã có phiên), `Stop`, `GetStatus` (log tail, lý do chưa Start được).
+  `Runner` chạy trong `aw worker` (vòng 2 giây): nhận phiên REQUESTED, kiểm cổng trống, giải secret theo repository, chạy từng tiến trình
+  qua supervisor (process group / Job Object), log từng tiến trình có che secret theo dòng (`internal/adapters/runapphost`, 8 MiB);
+  dừng và giết cả cây khi Stop, tới hạn, worktree hết READY, có write lease, một tiến trình thoát, worker dừng; sau khi worker khởi động
+  lại thì đóng phiên cũ FAILED. Route `getRunAppProfile`, `setRunAppProfile`, `getRunAppStatus`, `startRunApp`, `stopRunApp`; CLI
+  `aw repository run-app show|set`, `aw repository-workspace run-app status|start|stop`; giao diện: dải **Run app** trong tab Workspace
+  (Start/Stop, trạng thái, lý do, log, Open preview, trình sửa hồ sơ JSON có mẫu). Docs: operator 03/05/09. Test:
+  `runapp_sqlite_test.go` (SQLite thật, worktree thật, supervisor thật: chạy hai tiến trình trong thư mục con, secret bị che trong log,
+  Stop giết tiến trình; cổng bận, tiến trình tự thoát, secret thiếu → FAILED; write lease và project khác bị từ chối),
+  `RunAppPanel.test.tsx`. Chưa làm: tìm tên tiến trình đang giữ cổng (chỉ báo cổng bận); chưa chạy trên Windows thật.
 
 ### V12-31 — QA trong aw (UX-33, UX-43)
 

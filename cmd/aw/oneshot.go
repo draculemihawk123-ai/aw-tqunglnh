@@ -12,6 +12,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/runapphost"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
@@ -55,6 +56,7 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 	// V12-29: the same data key `aw serve` and `aw worker` use (it follows --artifact-root).
 	if strings.TrimSpace(opts.ArtifactRoot) != "" {
 		deps.SecretKeys = secretkey.New(opts.ArtifactRoot)
+		deps.RunAppHost = runapphost.New(opts.ArtifactRoot)
 	}
 	var cleanups []func()
 	cleanup := func() {

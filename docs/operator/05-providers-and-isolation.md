@@ -100,6 +100,45 @@ aw repository secret delete --project-id <p> --name R2_KEY <repositoryId>
 - `--env-allowlist` still decides which inherited environment variables reach a process; store secrets are given by name,
   in addition.
 
+## Run the application of a worktree for manual QA (V12-30, ADR-062)
+
+A repository has one **Run app profile**: the processes to start (for example a Spring backend and a Next.js frontend), each as an
+argv list — never a shell string — with the sub-directory of the worktree it runs in, its port, plain environment variables and the
+**names** of repository secrets (above), a preview URL, and an automatic stop (default 120 minutes, at most 1440). The task's
+**Workspace** tab shows a **Run app** strip: **Set up… / Profile…**, **Start**, **Stop**, **Logs**, **Open preview**.
+
+```bash
+cat > run-app.json <<'JSON'
+{"processes": [
+   {"name": "backend",  "argv": ["./mvnw", "spring-boot:run"], "dir": "backend",  "port": 8080, "secretNames": ["CHOCHUYENNHA_DB_PASSWORD"]},
+   {"name": "frontend", "argv": ["pnpm", "dev"],               "dir": "frontend", "port": 3000, "env": {"NEXT_PUBLIC_API_URL": "http://localhost:8080"}}
+ ],
+ "previewUrl": "http://localhost:3000", "stopAfterMinutes": 120}
+JSON
+aw repository run-app set --project-id <p> --file run-app.json <repositoryId>        # --expected-version <n> to replace one
+aw repository-workspace run-app start  --project-id <p> <repositoryWorkspaceId>
+aw repository-workspace run-app status --project-id <p> <repositoryWorkspaceId>     # state, log tails, why it cannot start
+aw repository-workspace run-app stop   --project-id <p> <repositoryWorkspaceId>
+```
+
+- **`aw worker` runs it** (`aw serve` only records the request; `aw up` starts both). A worker takes a requested session within two
+  seconds, checks every port is free (a port in use ends the session `FAILED: port 8080 (backend) is in use` — stop that program
+  first), resolves the secrets from the repository store, then the worker's environment, and starts each process with the worker's
+  supervisor (process group on Unix, Job Object on Windows).
+- The executable (`argv[0]`) is looked up in the **worker's** `PATH`, and a process inherits only the worker's `--env-allowlist`
+  variables, plus the profile's variables and secrets. A dev server usually needs `PATH`, `HOME` (and on Windows `SystemRoot`,
+  `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`): allow them with `--env-allowlist` (below). On Windows, give the real program
+  (`pnpm.cmd`, `mvnw.cmd`) when the name alone is not found.
+- **One application per repository at a time** (its ports are fixed): Start is refused while another worktree of the repository
+  runs it, while the worktree is not `READY`, and while an attempt holds the worktree's write lease.
+- **It stops, killing every process tree**, on Stop, at the automatic stop, when the worktree is released or quarantined, when an
+  attempt takes the write lease, when any of its processes exits (the session ends `FAILED: backend exited (code 1)`), and when the
+  worker stops. A worker killed hard (`kill -9`, a crash) cannot kill its children on Unix: when it starts again it closes its
+  sessions `FAILED`, and a port still held is reported at the next Start; on Windows the Job Object ends them with the worker.
+- **Logs**: one per process, under `<artifact-root>/run-app/<session>/<process>.log` (mode 0600, at most 8 MiB each — later output is
+  dropped), with every resolved secret value replaced by `[REDACTED]`. The UI and `status` show the last 16 KiB.
+- A running application keeps the profile it started with; a changed profile applies at the next Start.
+
 ## Env allowlist
 
 A spawned provider or command process inherits NOTHING from the worker's own process environment by default.

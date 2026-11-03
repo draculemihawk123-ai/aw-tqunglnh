@@ -134,6 +134,8 @@ type Deps struct {
 	ForgeClient ports.ForgeClient
 	// SecretKeys (V12-29) protects the repository secret store's data key (`repository secret ...`).
 	SecretKeys ports.SecretKeyProvider
+	// RunAppHost (V12-30) reads the Run app logs `aw worker` writes (`repository-workspace run-app status`).
+	RunAppHost ports.RunAppHost
 	Isolation  ports.IsolationEnforcementChecker
 	Agents     *agentregistry.Registry
 	Config     config.Config

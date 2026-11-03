@@ -20,6 +20,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/runapphost"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretenv"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
@@ -42,6 +43,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	"github.com/taQuangLing/agent-workflow/internal/app/repositoryprobe"
+	"github.com/taQuangLing/agent-workflow/internal/app/runapp"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/app/secretstore"
 	appwork "github.com/taQuangLing/agent-workflow/internal/app/work"
@@ -212,6 +214,8 @@ type assembledWorker struct {
 	completion *runtime.CompletionOrchestrator
 	logger     *logging.Logger
 	matcher    redact.Matcher
+	// runApp (V12-30, ADR-062) runs the Run app sessions this worker takes.
+	runApp *runapp.Runner
 }
 
 func (w *assembledWorker) close() { _ = w.store.Close() }
@@ -368,12 +372,18 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 		return nil, fmt.Errorf("construct worker pool: %w", err)
 	}
 
+	runApp := runapp.NewRunner(runapp.RunnerDeps{
+		UnitOfWork: uow, Host: runapphost.New(opts.artifactRoot), Supervisor: deps.supervisor, Workspaces: provider,
+		Secrets: deps.secrets.(ports.ScopedSecretResolver), Redact: matcher, InheritedEnvironment: cfg.EnvAllowlist, WorkerID: opts.workerID,
+		Log: func(message string, fields map[string]any) { _ = logger.Warn(identity, message, fields) },
+	})
+
 	built = true
 	return &assembledWorker{
 		opts: opts, store: store, uow: uow, ids: deps.ids, clk: deps.clk, artifacts: artifacts,
 		registry: registry, pool: pool, catalog: deps.catalog,
 		completion: runtime.NewCompletionOrchestrator(uow, deps.ids, deps.clk),
-		logger:     logger, matcher: matcher,
+		logger:     logger, matcher: matcher, runApp: runApp,
 	}, nil
 }
 
@@ -505,12 +515,14 @@ func (w *assembledWorker) run(ctx context.Context, stdout io.Writer) error {
 
 	loopCtx, cancelLoops := context.WithCancel(ctx)
 	var loops sync.WaitGroup
-	loops.Add(5)
+	loops.Add(6)
 	go func() { defer loops.Done(); w.closeDeadLocalCommits(loopCtx) }()
 	go func() { defer loops.Done(); w.advanceQueues(loopCtx) }()
 	go func() { defer loops.Done(); w.driveProjections(loopCtx) }()
 	go func() { defer loops.Done(); w.sweepAttachmentClaims(loopCtx) }()
 	go func() { defer loops.Done(); w.driveCompletion(loopCtx) }()
+	// V12-30: on shutdown it kills every application process tree it started before returning.
+	go func() { defer loops.Done(); w.runApp.Run(loopCtx, runapp.DefaultTickInterval) }()
 
 	fmt.Fprintf(stdout, "{\"workerId\":%q}\n", w.opts.workerID)
 	err := w.pool.Run(ctx)

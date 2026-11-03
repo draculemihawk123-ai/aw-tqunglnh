@@ -39,8 +39,8 @@ Resource commands (aw <resource> <action> [flags]):
   project                archive|commit-template|create|list|rename|restore|set-commit-template|show
   projection             rebuild|rebuild-status|status
   release-set            abandon|create|list|local-commit|local-commit status|seal|show
-  repository             check|delete|disable|list|onboarding|readiness accept-exception|readiness set|readiness show|readiness verify|register|retry-probe|secret delete|secret list|secret set|show|update
-  repository-workspace   adopt-head|base-status|diff|log|merge|pull-request|push|reconcile|remote|restore-parked|show|source|sync-base
+  repository             check|delete|disable|list|onboarding|readiness accept-exception|readiness set|readiness show|readiness verify|register|retry-probe|run-app set|run-app show|secret delete|secret list|secret set|show|update
+  repository-workspace   adopt-head|base-status|diff|log|merge|pull-request|push|reconcile|remote|restore-parked|run-app start|run-app status|run-app stop|show|source|sync-base
   run                    cancel|costs|diagnostics|graph|needs-you|show|start|timeline
   scope-expansion        approve|list|reject|request|show|withdraw
   settings               show|update

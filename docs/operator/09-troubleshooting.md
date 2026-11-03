@@ -428,6 +428,21 @@ Confirm `aw worker` is actually running against the SAME `--db`/`--artifact-root
 serve` — `aw serve` alone never probes repositories, executes workflow nodes, or updates projections; it only
 serves the HTTP/CLI surface and accepts commands. See [01-quickstart.md](01-quickstart.md) step 2.
 
+## Run app: the session ended `FAILED` (V12-30)
+
+`aw repository-workspace run-app status --project-id <p> <repositoryWorkspaceId>` (or the Workspace tab's Run app strip) gives the
+reason and the log tail of every process:
+
+| Reason | What to do |
+|---|---|
+| `port N (name) is in use` | Another program (often a dev server left from an earlier run) listens there: stop it, then Start. |
+| `secret X (name) cannot be resolved` | Set it in the repository's **Secrets** (`aw repository secret set`), or in the worker's environment. |
+| `name exited (code N); see its log` | The process stopped by itself: read its log (a missing dependency, a wrong `dir`, an executable not in the worker's `PATH`). |
+| `name did not start: …` | `argv[0]` was not found or the `dir` does not exist in the worktree; on Windows give `pnpm.cmd` and the like. |
+| `the worker restarted while the application ran` | The worker stopped without stopping it; Start again (check the ports first). |
+
+Nothing happens after Start (state stays "starting")? No `aw worker` is running against this database.
+
 ## Where to look next
 
 - A specific command's exact flags/body shape: `aw <resource> <action> -h`, or

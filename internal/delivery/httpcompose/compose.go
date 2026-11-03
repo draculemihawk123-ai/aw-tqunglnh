@@ -67,6 +67,7 @@ import (
 	redohttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/redo"
 	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
+	httprunapp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/runapp"
 	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
 	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
 	httpsecrets "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/secrets"
@@ -123,6 +124,8 @@ type Dependencies struct {
 	ForgeClient ports.ForgeClient
 	// SecretKeys (V12-29, ADR-061) protects the repository secret store's data key. Nil: setting a secret answers UNAVAILABLE.
 	SecretKeys ports.SecretKeyProvider
+	// RunAppHost (V12-30, ADR-062) reads the logs `aw worker` writes for a Run app session (same artifact root). Nil: no log is shown.
+	RunAppHost ports.RunAppHost
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -267,6 +270,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{}, deps.WorkspaceHeadAuditor, deps.Matcher)
 	httpapi.RegisterForgeRoutes(routes, deps.UnitOfWork, deps.WorkspaceHeadAuditor, deps.ForgeClient) // V12-28
 	httpsecrets.RegisterRoutes(routes, deps.UnitOfWork, deps.SecretKeys)                              // V12-29
+	httprunapp.RegisterRoutes(routes, deps.UnitOfWork, deps.RunAppHost)                               // V12-30
 	// V6-10D: bounded source/diff/repository-log inspection routes, backed
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})
