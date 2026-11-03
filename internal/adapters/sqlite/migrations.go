@@ -314,11 +314,14 @@ func applyOneMigration(ctx context.Context, conn *sql.Conn, m migration) error {
 		return applyMigrationWithForeignKeysOff(ctx, conn, m)
 	}
 
-	tx, err := conn.BeginTx(ctx, &sql.TxOptions{})
+	tx, err := beginMigrationTx(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("begin migration %d (%s): %w", m.Version, m.Name, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if applied, err := appliedInsideTx(ctx, tx, m); err != nil || applied {
+		return err
+	}
 
 	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return fmt.Errorf("apply migration %d (%s): %w", m.Version, m.Name, err)
@@ -332,6 +335,44 @@ func applyOneMigration(ctx context.Context, conn *sql.Conn, m migration) error {
 		return fmt.Errorf("commit migration %d (%s): %w", m.Version, m.Name, err)
 	}
 	return nil
+}
+
+// migrationLockWait bounds how long a process waits for another process's migration to finish (V12-08).
+const migrationLockWait = 2 * time.Minute
+
+// beginMigrationTx begins the migration's transaction, which takes SQLite's write lock at BEGIN (_txlock=immediate). V12-08
+// (UX-08): `aw serve` and `aw worker` started together on a fresh database both saw a migration as not applied and both ran it —
+// the second failed with "duplicate column name". The write lock is the migration lock: whoever holds it applies, the other waits
+// here (busy_timeout, then these retries, up to migrationLockWait) and then finds the migration applied (appliedInsideTx).
+func beginMigrationTx(ctx context.Context, conn *sql.Conn) (*sql.Tx, error) {
+	deadline := time.Now().Add(migrationLockWait)
+	for {
+		tx, err := conn.BeginTx(ctx, &sql.TxOptions{})
+		if err == nil || !isSQLiteBusy(err) || time.Now().After(deadline) {
+			return tx, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// appliedInsideTx re-reads, under the write lock, whether m was applied meanwhile by another process; a different checksum is
+// the usual "an applied migration must never be edited" error.
+func appliedInsideTx(ctx context.Context, tx *sql.Tx, m migration) (bool, error) {
+	var applied string
+	err := tx.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version = ?`, m.Version).Scan(&applied)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read migration %d (%s) state under the migration lock: %w", m.Version, m.Name, err)
+	case applied != m.Checksum:
+		return true, fmt.Errorf("migration %d (%s) checksum mismatch: database=%s code=%s — an applied migration must never be edited", m.Version, m.Name, applied, m.Checksum)
+	}
+	return true, nil
 }
 
 // applyMigrationWithForeignKeysOff runs m with PRAGMA foreign_keys=OFF for
@@ -369,11 +410,14 @@ func applyMigrationWithForeignKeysOff(ctx context.Context, conn *sql.Conn, m mig
 		}
 	}()
 
-	tx, beginErr := conn.BeginTx(ctx, &sql.TxOptions{})
+	tx, beginErr := beginMigrationTx(ctx, conn)
 	if beginErr != nil {
 		return fmt.Errorf("begin migration %d (%s): %w", m.Version, m.Name, beginErr)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if applied, appliedErr := appliedInsideTx(ctx, tx, m); appliedErr != nil || applied {
+		return appliedErr
+	}
 
 	if _, execErr := tx.ExecContext(ctx, m.SQL); execErr != nil {
 		return fmt.Errorf("apply migration %d (%s): %w", m.Version, m.Name, execErr)

@@ -238,6 +238,9 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   `duplicate column name`.
 - **Mục tiêu:** sửa tranh chấp migration trước, bằng khóa migration để hai tiến trình không chạy migration cùng lúc. Sau đó có
   một lệnh (ví dụ `aw up`) chạy cả serve và worker, dừng cả hai cùng nhau, ghi log về một chỗ.
+- **Kết quả (đã xong, ADR-050):** nguyên nhân: kiểm "đã áp dụng" nằm ngoài transaction. Nay kiểm lại dưới khóa ghi (`appliedInsideTx`),
+  chờ khóa tới 2 phút. Test `migration_lock_test.go` (4 tiến trình mở cùng một DB mới; trước khi sửa: `table projects already exists`).
+  `aw up` chạy serve + worker trong một tiến trình (`up.go`, `up_test.go`; đã chạy thật: cả hai báo sẵn sàng, Ctrl+C dừng cả hai).
 
 ---
 

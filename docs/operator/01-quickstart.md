@@ -37,6 +37,19 @@ aw worker --db ./aw-install/aw.db --artifact-root ./aw-install/artifacts --works
 It prints `{"workerId":"aw-worker-<pid>"}` once ready. See [02-configuration.md](02-configuration.md) for
 every other flag both processes accept.
 
+**One terminal instead of two (V12-08):** `aw up` runs both in one process, starts and stops them together (Ctrl+C, or
+either one ending) and writes both logs to the same terminal. Shared flags are given once; anything only one of them takes
+goes through `--serve-args` / `--worker-args` (space-separated, no quoting):
+
+```bash
+aw up --db ./aw-install/aw.db --artifact-root ./aw-install/artifacts --workspace-root ./aw-install/workspaces \
+  --claude-executable claude --worker-args "--claude-permission-mode acceptEdits"
+```
+
+Starting `serve` and `worker` at the same moment on a fresh database is safe since V12-08: the first one to take SQLite's
+write lock applies each migration, the other waits (up to two minutes) and finds it applied. Before, one of them failed with
+`duplicate column name`.
+
 Every resource command below (`aw <resource> <action>`) needs the SAME `--db`/`--artifact-root`
 `--workspace-root` flags repeated (or set once via `AW_DB`/`AW_ARTIFACT_ROOT`/`AW_WORKSPACE_ROOT` environment
 variables — see [02-configuration.md](02-configuration.md)); they are omitted below for readability.

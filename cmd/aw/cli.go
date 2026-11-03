@@ -46,6 +46,7 @@ var usage = `Usage: aw <command> [flags]
 Process commands:
   serve       start the local API/control-plane server
   worker      start an embedded worker process
+  up          start serve and worker together in one process (shared flags once; --serve-args/--worker-args for the rest)
   help        show this help
   version     print the aw build version
 
@@ -200,6 +201,7 @@ func isUsageError(err error) bool {
 var subcommands = map[string]func(arguments []string, stdout io.Writer) error{
 	"serve":   runServe,
 	"worker":  runWorker,
+	"up":      runUp, // V12-08: serve + worker in one process
 	"version": runVersion,
 }
 

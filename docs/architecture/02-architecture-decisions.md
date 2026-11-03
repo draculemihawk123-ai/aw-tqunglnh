@@ -1454,9 +1454,23 @@ trong vòng (rework → build), mà ADR-036 bắt cạnh escalation phải rời
 **Hệ quả:** chưa làm phần đặt ngưỡng trên trang Components của giao diện (cần cột cấu hình, migration, API): ngưỡng nằm trong repository
 và đổi bằng commit. Ghi lại cho task sau.
 
-## 52. Baseline sau review thiết kế
+## 52. ADR-050 — Khóa migration là khóa ghi của SQLite; `aw up` chạy serve và worker trong một tiến trình
 
-ADR-001…049 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-08, UX-08):** bật aw cần hai cửa sổ terminal; bật cùng lúc trên database mới thì một bên lỗi migration (`duplicate column
+name`, hoặc `table projects already exists`): cả hai đọc "chưa áp dụng" ngoài transaction rồi lần lượt áp dụng.
+
+**Quyết định:**
+
+1. Mỗi migration kiểm lại `schema_migrations` **bên trong** transaction của nó, sau khi đã giữ khóa ghi (`_txlock=immediate`); đã có thì
+   không làm gì. Tiến trình đến sau chờ khóa (`busy_timeout`, rồi thử lại tới 2 phút). Không cần bảng khóa hay file khóa riêng.
+2. Lệnh tiến trình mới `aw up`: `serve` và `worker` trong cùng tiến trình, chung context (một bên dừng thì bên kia dừng), chung stdout/
+   stderr. Cờ chung truyền một lần; cờ riêng qua `--serve-args`/`--worker-args`. `serve` và `worker` vẫn chạy riêng được như cũ.
+
+**Hệ quả:** tập lệnh tiến trình là `serve`, `worker`, `up`, `version`.
+
+## 53. Baseline sau review thiết kế
+
+ADR-001…050 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1509,6 +1523,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-050 (V12-08): migration kiểm lại dưới khóa ghi (không còn tranh chấp khi bật serve và worker cùng lúc); lệnh `aw up`.
 - ADR-049 (V12-06) cho cạnh escalation của vòng dẫn tới node APPROVAL nằm trong vòng (ngoại lệ hẹp của ADR-036); kit dùng nó cho cổng `size-review`.
 - ADR-048 (V12-05) thêm lệnh `UseNewCli` (đo lại CLI, đăng ký build, publish version ghim build mới, tùy chọn làm lại; không repin run đang chạy); nút Redo lấy từ redo-preview khi thẻ không có run.
 - ADR-047 (V12-04): không đo được CLI là `ADAPTER_PROBE_FAILED` (không phải drift, probe thử lại); worker không spawn được thì không nhận việc; lỗi khởi chạy tiến trình có diagnostic `PROCESS_START_FAILED`; mất đăng nhập chặn node (`PROVIDER_LOGIN_REQUIRED`) và `aw doctor` báo.
