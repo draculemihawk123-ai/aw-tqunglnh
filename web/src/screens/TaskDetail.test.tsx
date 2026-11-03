@@ -1289,6 +1289,33 @@ describe('ChatTab (V7-15)', () => {
     expect(screen.getByLabelText('Message composer')).toHaveValue('');
   });
 
+  it('V12-18: aims a message at one node and its next attempt, and shows who each message is for', async () => {
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1' } as never) } as never);
+    vi.mocked(api.getRunGraph).mockResolvedValue({
+      runId: 'run-1', manifestRevision: 1, activations: [], possibleEdges: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' },
+      nodes: [{ key: 'start', type: 'START' }, { key: 'repro', type: 'AGENT' }, { key: 'fix', type: 'AGENT' }],
+    } as never);
+    vi.mocked(api.listMessages).mockResolvedValue({ items: [
+      messageRefFixture({ messageId: 'msg-a', role: 'USER', actor: 'local-operator', targetNodeKey: 'repro' }),
+      messageRefFixture({ messageId: 'msg-b', sequence: 2, role: 'USER', actor: 'local-operator', nextAttemptOnly: true, delivered: true }),
+    ] } as never);
+    vi.mocked(api.appendMessage).mockResolvedValue({ messageId: 'msg-new', projectId: 'proj-1', workItemId: 'wi-1', sequence: 3, contentArtifactId: 'a' } as never);
+    renderChatTab();
+
+    expect(await screen.findByTestId('audience-msg-a')).toHaveTextContent('for repro');
+    expect(screen.getByTestId('audience-msg-b')).toHaveTextContent('for every node, next attempt only — delivered');
+    const target = screen.getByLabelText('Message for');
+    await within(target).findByRole('option', { name: 'fix' });
+    expect(within(target).queryByRole('option', { name: 'start' })).toBeNull();
+    await userEvent.selectOptions(target, 'fix');
+    await userEvent.click(screen.getByRole('checkbox', { name: /only the next attempt of fix/ }));
+    await userEvent.type(screen.getByLabelText('Message composer'), 'skip the migration this time');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(api.appendMessage).toHaveBeenCalledWith('proj-1', 'wi-1',
+      { role: 'USER', content: 'skip the migration this time', contentType: 'text/plain', targetNodeKey: 'fix', nextAttemptOnly: true },
+      expect.anything()));
+  });
+
   it('a failed send keeps the draft and Retry reuses the IDENTICAL idempotency key rather than minting a new one', async () => {
     vi.mocked(api.listMessages).mockResolvedValue({ items: [] } as never);
     vi.mocked(api.appendMessage)

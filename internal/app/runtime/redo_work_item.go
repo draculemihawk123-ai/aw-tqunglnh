@@ -405,8 +405,15 @@ func RecreateWorkItem(ctx context.Context, deps RedoDeps, cmd ports.Command, req
 			if err != nil {
 				return err
 			}
+			// V12-18: a next-attempt-only message an attempt already got is spent; it is not carried over.
+			var delivered map[string]bool
+			if appmessage.HasNextAttemptOnly(messages) {
+				if delivered, err = appmessage.DeliveredMessageIDs(ctx, tx, workItemID); err != nil {
+					return err
+				}
+			}
 			for _, m := range messages {
-				if m.Role != message.RoleUser {
+				if m.Role != message.RoleUser || (m.NextAttemptOnly && delivered[string(m.ID)]) {
 					continue
 				}
 				if _, err := appmessage.CopyMessageTx(ctx, tx, deps.IDs, subCommand(cmd, fmt.Sprintf("carry-%d", carried)), m, created.WorkItemID); err != nil {

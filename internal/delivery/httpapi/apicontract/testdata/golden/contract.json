@@ -203,6 +203,16 @@
             "name": "Pinned",
             "jsonTag": "pinned,omitempty",
             "type": "bool"
+          },
+          {
+            "name": "TargetNodeKey",
+            "jsonTag": "targetNodeKey,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "NextAttemptOnly",
+            "jsonTag": "nextAttemptOnly,omitempty",
+            "type": "bool"
           }
         ]
       },

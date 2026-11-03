@@ -148,6 +148,8 @@ export interface AppendMessageRequest {
   contentType: string;
   sensitivity?: string;
   pinned?: boolean;
+  targetNodeKey?: string;
+  nextAttemptOnly?: boolean;
 }
 
 export interface AppendMessageResponse {

@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
+	appmessage "github.com/taQuangLing/agent-workflow/internal/app/message"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
 	"github.com/taQuangLing/agent-workflow/internal/domain/command"
@@ -350,13 +351,15 @@ func ScheduleExecutableNodeRun(
 			if err != nil {
 				return err
 			}
-			// V11-11 (ADR-042): activity messages the engine wrote for people never reach a prompt.
-			messages := make([]message.Message, 0, len(thread))
-			for _, m := range thread {
-				if !m.DisplayOnly {
-					messages = append(messages, m)
+			// V11-11 (ADR-042): activity messages the engine wrote for people never reach a prompt. V12-18 (ADR-053): a message aimed
+			// at another node does not either, and a next-attempt-only message reaches the first attempt that gets it, once.
+			var delivered map[string]bool
+			if appmessage.HasNextAttemptOnly(thread) {
+				if delivered, err = appmessage.DeliveredMessageIDs(ctx, tx, string(run.WorkItemID)); err != nil {
+					return err
 				}
 			}
+			messages := appmessage.ForAttempt(thread, node.Key, delivered)
 			messageRefs = make([]contextsnapshot.MessageRef, len(messages))
 			for i, m := range messages {
 				messageRefs[i] = contextsnapshot.MessageRef{MessageID: string(m.ID)}

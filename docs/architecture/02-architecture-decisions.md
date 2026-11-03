@@ -1500,9 +1500,30 @@ phải đọc bằng CLI; mỗi node chỉ có trạng thái, không có "nó đ
 
 **Hệ quả:** route thứ 116, dòng UX Screen 7 số 18, parity.
 
-## 55. Baseline sau review thiết kế
+## 55. ADR-053 — Message có người nhận: một node, hoặc chỉ attempt kế tiếp
 
-ADR-001…052 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-18, UX-20):** message của người vận hành gắn vào cả WorkItem, nên mọi node AGENT về sau đều nhận. Ghi chú "không sửa
+code sản phẩm" viết cho `repro` làm `fix` cũng không sửa code, mất 2 vòng.
+
+**Quyết định:**
+
+1. Message có thêm hai trường, chọn lúc append và không đổi (chat vẫn append-only, migration 0057): `targetNodeKey` (chỉ attempt của
+   node có key đó nhận; rỗng = mọi node như trước) và `nextAttemptOnly` (chỉ attempt đầu tiên được lên lịch sau message nhận, của
+   node đích nếu có). HTTP `appendMessage`, `aw message append --node --next-attempt-only`.
+2. Scheduler lọc trước khi áp ngân sách message (ADR của V9-07): message không nhắm node này không vào snapshot, không vào cả
+   `omittedMessageRefs`. Snapshot vẫn bất biến và hash không đổi với chat không dùng trường mới.
+3. "Đã giao" không lưu trên message: đọc từ context snapshot của các attempt (message nằm trong `messageRefs` hoặc
+   `omittedMessageRefs`). `listMessages` trả `delivered`. Chỉ đọc snapshot khi chat có message `nextAttemptOnly`.
+4. Key node không được kiểm với workflow (WorkItem có thể chạy lại ở version khác): key sai chỉ không tới prompt nào, giao diện
+   chọn key từ các node AGENT của run mới nhất. Node CHECKER không đọc chat nên không bị ảnh hưởng.
+5. Chạy lại có mang note (`CarryMessages`) giữ đích của message, bỏ message `nextAttemptOnly` đã giao.
+
+**Hệ quả:** cảnh báo trong doc về "MessageRefs cùng OmittedMessageRefs là mọi message của WorkItem" nay hiểu là mọi message
+nhắm tới node đó; thêm trường vào schema `appendMessage`/`listMessages` (bổ sung, không phá vỡ).
+
+## 56. Baseline sau review thiết kế
+
+ADR-001…053 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1555,6 +1576,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-053 (V12-18) cho message có người nhận: `targetNodeKey` (một node) và `nextAttemptOnly` (chỉ attempt kế tiếp, giao một lần, đọc từ snapshot).
 - ADR-052 (V12-16) thêm truy vấn `ListNeedsYou` (cổng duyệt đang chờ và blocker đang mở của project), trang Needs you, bộ đếm và thông báo trình duyệt; kênh ngoài để ADR sau.
 - ADR-051 (V12-11) thêm `resultSummary` cho mỗi activation và `stopReason` có kiểu cho chẩn đoán run.
 - ADR-050 (V12-08): migration kiểm lại dưới khóa ghi (không còn tranh chấp khi bật serve và worker cùng lúc); lệnh `aw up`.

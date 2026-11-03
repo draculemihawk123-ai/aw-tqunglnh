@@ -30,6 +30,9 @@ type appendMessageBody struct {
 	// Pinned (V9-07) keeps the message in every later prompt even when the
 	// context policy's `messages` budget would drop older ones.
 	Pinned bool `json:"pinned,omitempty"`
+	// TargetNodeKey and NextAttemptOnly (V12-18, ADR-053) aim the message at one node's attempts and/or at the next attempt only.
+	TargetNodeKey   string `json:"targetNodeKey,omitempty"`
+	NextAttemptOnly bool   `json:"nextAttemptOnly,omitempty"`
 }
 
 // handleAppendMessage implements
@@ -86,6 +89,11 @@ func handleAppendMessage(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
+		if err := appmessage.ValidateTargetNodeKey(body.TargetNodeKey); err != nil {
+			writeValidationError(w, "targetNodeKey", "must be a node key (no spaces, at most 128 characters)")
+			return
+		}
+
 		if replayOrProceed(r.Context(), w, deps, cmd) {
 			return
 		}
@@ -93,6 +101,7 @@ func handleAppendMessage(deps Dependencies) http.HandlerFunc {
 		result, err := appmessage.AppendMessage(r.Context(), deps.UnitOfWork, deps.ArtifactStore, deps.IDs, deps.Clock, cmd, appmessage.AppendMessageRequest{
 			ProjectID: projectID, WorkItemID: workItemID, AttemptID: body.AttemptID, Role: role,
 			Content: []byte(body.Content), ContentType: body.ContentType, Pinned: body.Pinned, Sensitivity: sensitivity, Matcher: deps.Matcher,
+			TargetNodeKey: body.TargetNodeKey, NextAttemptOnly: body.NextAttemptOnly,
 		})
 		if err != nil {
 			writeCommandError(w, err)

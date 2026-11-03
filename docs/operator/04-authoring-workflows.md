@@ -328,6 +328,25 @@ The HTTP route takes `"pinned": true` in the `appendMessage` body. A message is 
 changes afterwards (the chat is append-only); pinned messages count toward the budget, so pinning many large messages
 leaves less room for the rest.
 
+**Aiming a message at one node, or at the next attempt only (V12-18).** A message reaches every node that reads the
+chat by default, so a note written for `repro` ("do not change product code") also reaches `fix`. Choose who it is for
+when you append it:
+
+```bash
+aw message append <workItemId> --project-id <p> --node repro --file note.txt         # only repro's attempts
+aw message append <workItemId> --project-id <p> --next-attempt-only --file note.txt  # only the next attempt, of any node
+aw message append <workItemId> --project-id <p> --node fix --next-attempt-only --file note.txt
+```
+
+HTTP: `"targetNodeKey": "repro"` and `"nextAttemptOnly": true` in the `appendMessage` body; the web UI's Chat tab has a
+**For** list (the run's AGENT nodes) and an **only the next attempt** box. A message aimed at another node is left out of
+an attempt's snapshot entirely (it is neither included nor in `omittedMessages`). A next-attempt-only message reaches the
+first attempt scheduled after it (of `--node` when set) and no later one: "delivered" is read from the attempts' context
+snapshots, and `listMessages` reports it as `"delivered": true` (the Chat tab shows *next attempt only — delivered* or
+*— waiting*). A checker node never reads the chat, so aiming a message at one changes nothing. A node key no node has is
+accepted and reaches no prompt. Running a task again with its notes (`--carry-messages`) carries an aimed message with its
+target, and drops a next-attempt-only message that was already delivered.
+
 ## Setting up a repository before an agent writes — readiness profile and baseline (V9-08)
 
 Initialization is a phase of its own with evidence, not something an agent discovers by failing. A repository

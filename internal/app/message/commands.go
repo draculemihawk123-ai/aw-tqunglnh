@@ -63,8 +63,12 @@ type AppendMessageRequest struct {
 	// Pinned (V9-07) keeps the message in every later prompt even when a
 	// CONTEXT policy's `messages` budget would otherwise reduce it to a
 	// reference. Part of what the command's request hash covers.
-	Pinned      bool
-	Sensitivity redact.Sensitivity
+	Pinned bool
+	// TargetNodeKey and NextAttemptOnly (V12-18, ADR-053) aim the message: at one node's attempts, and/or at the first attempt
+	// scheduled after it. See message.Message.TargetNodeKey.
+	TargetNodeKey   string
+	NextAttemptOnly bool
+	Sensitivity     redact.Sensitivity
 	// Matcher optionally redacts any EXACT match against a known secret
 	// value (redact.Matcher's own documented "exact equality, never a
 	// pattern/regex" contract — it does not scan for a secret embedded
@@ -185,6 +189,24 @@ func validateAppendRequest(req AppendMessageRequest) error {
 	if req.Sensitivity < redact.Public || req.Sensitivity > redact.Secret {
 		return fmt.Errorf("message: unknown Sensitivity %d", req.Sensitivity)
 	}
+	if err := ValidateTargetNodeKey(req.TargetNodeKey); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ErrInvalidTargetNodeKey is returned for a TargetNodeKey that cannot be a workflow node key.
+var ErrInvalidTargetNodeKey = errors.New("message: targetNodeKey must be a node key (no spaces, at most 128 characters)")
+
+// ValidateTargetNodeKey checks the shape of a message's target node key (empty = every node). A key no node of the work item's
+// workflow has is not refused: the message then reaches no prompt, and the chat shows the target.
+func ValidateTargetNodeKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if len(key) > 128 || strings.ContainsAny(key, " \t\r\n") {
+		return ErrInvalidTargetNodeKey
+	}
 	return nil
 }
 
@@ -225,6 +247,7 @@ func AppendPreparedMessageTx(ctx context.Context, tx ports.Tx, ids idsource.Sour
 	return appendMessageRowTx(ctx, tx, ids, cmd, ports.AppendMessageRequest{
 		ProjectID: req.ProjectID, WorkItemID: req.WorkItemID, AttemptID: req.AttemptID,
 		Actor: cmd.Actor, Role: req.Role, ContentArtifactID: string(prepared.ID), Pinned: req.Pinned,
+		TargetNodeKey: req.TargetNodeKey, NextAttemptOnly: req.NextAttemptOnly,
 	})
 }
 
@@ -236,6 +259,7 @@ func CopyMessageTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd po
 	return appendMessageRowTx(ctx, tx, ids, cmd, ports.AppendMessageRequest{
 		ProjectID: string(src.ProjectID), WorkItemID: workItemID,
 		Actor: src.Actor, Role: src.Role, ContentArtifactID: string(src.ContentArtifactID), Pinned: src.Pinned,
+		TargetNodeKey: src.TargetNodeKey, NextAttemptOnly: src.NextAttemptOnly,
 	})
 }
 
@@ -336,4 +360,22 @@ func ListMessages(ctx context.Context, uow ports.UnitOfWork, workItemID string) 
 		return err
 	})
 	return result, err
+}
+
+// ListMessagesWithDelivery is ListMessages plus, when the chat has a next-attempt-only message (V12-18), the ids of the messages
+// an attempt already got (DeliveredMessageIDs); nil otherwise.
+func ListMessagesWithDelivery(ctx context.Context, uow ports.UnitOfWork, workItemID string) ([]message.Message, map[string]bool, error) {
+	var result []message.Message
+	var delivered map[string]bool
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		if result, err = tx.Messages().ListMessagesForWorkItem(ctx, workItemID); err != nil {
+			return err
+		}
+		if HasNextAttemptOnly(result) {
+			delivered, err = DeliveredMessageIDs(ctx, tx, workItemID)
+		}
+		return err
+	})
+	return result, delivered, err
 }

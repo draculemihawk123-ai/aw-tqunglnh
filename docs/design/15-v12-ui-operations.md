@@ -485,6 +485,11 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   sản phẩm" viết cho `repro` làm `fix` cũng không sửa code, mất 2 vòng.
 - **Mục tiêu:** chọn phạm vi cho message: một node, hoặc chỉ attempt kế tiếp. Giao diện hiện rõ message nào đang có hiệu lực với
   node nào.
+- **Kết quả (đã xong, ADR-053):** message có `targetNodeKey` và `nextAttemptOnly` (migration 0057, HTTP `appendMessage`,
+  `aw message append --node --next-attempt-only`). Scheduler bỏ message nhắm node khác khỏi snapshot; message chỉ-attempt-kế-tiếp
+  vào attempt đầu tiên sau nó rồi thôi (đã giao đọc từ snapshot, `listMessages` trả `delivered`). Chạy lại kèm note giữ đích, bỏ message
+  đã giao. Tab Chat: ô **For** (các node AGENT của run mới nhất) và **only the next attempt**; mỗi message hiện nhãn "for repro",
+  "next attempt only — delivered/waiting". Test: `message_target_sqlite_test.go`, `TaskDetail.test.tsx`.
 
 ### V12-19 — Hàng đợi task (UX-30)
 

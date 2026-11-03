@@ -41,6 +41,10 @@ export interface MessageRef {
   /** V11-11: an activity message the engine wrote for people (never part of a prompt), and the node run it is about. */
   displayOnly?: boolean;
   nodeRunId?: string;
+  /** V12-18 (ADR-053): the node the message is for (empty = every node), next-attempt-only, and whether an attempt already got it. */
+  targetNodeKey?: string;
+  nextAttemptOnly?: boolean;
+  delivered?: boolean;
 }
 
 export function messageContentUrl(projectId: string, workItemId: string, messageId: string): string {

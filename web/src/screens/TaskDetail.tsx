@@ -2315,8 +2315,11 @@ function MessageBody({ projectId, workItemId, message }: { projectId: string; wo
   );
 }
 
-function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: string; workItemId: string; isOffline?: boolean; onViewNode?: (nodeRunId: string) => void }) {
+function ChatTab({ projectId, workItemId, isOffline, onViewNode, nodeKeys = [] }: { projectId: string; workItemId: string; isOffline?: boolean; onViewNode?: (nodeRunId: string) => void; nodeKeys?: string[] }) {
   const queryClient = useQueryClient();
+  // V12-18: who the next message is for — one node, and/or only the next attempt.
+  const [targetNodeKey, setTargetNodeKey] = useState('');
+  const [nextAttemptOnly, setNextAttemptOnly] = useState(false);
   // V11-11: the engine writes its milestones here too; "mine" hides them.
   const [onlyMine, setOnlyMine] = useState(false);
   const { toasts, show, dismiss } = useToasts();
@@ -2352,6 +2355,7 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
   const sendMutation = useMutation({
     mutationFn: () => appendMessage(projectId, workItemId, {
       role: 'USER', content: draft, contentType: 'text/plain',
+      ...(targetNodeKey ? { targetNodeKey } : {}), ...(nextAttemptOnly ? { nextAttemptOnly } : {}),
     }, withSessionToken({ idempotencyKey: composeKey })),
     onSuccess: result => {
       // The operator already holds the exact text just sent — seed the
@@ -2413,6 +2417,7 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
                       <span className="text-[12px] text-[#475569]">{new Date(msg.createdAt).toLocaleTimeString()}</span>
                       {msg.attemptId && <span className="font-mono text-[12px] px-1.5 py-0.5 bg-[#EDE9FE] text-[#5B21B6] rounded-[4px]">{msg.attemptId}</span>}
                       {msg.displayOnly && <span className="text-[12px] px-1.5 py-0.5 bg-[#FEF3C7] text-[#92400E] rounded-[4px]">activity</span>}
+                      {!msg.displayOnly && <MessageAudience message={msg} />}
                       {msg.displayOnly && msg.nodeRunId && onViewNode && (
                         <button type="button" className="text-[12px] text-[#3659E3] hover:underline" onClick={() => onViewNode(msg.nodeRunId!)}>view progress</button>
                       )}
@@ -2455,6 +2460,20 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
                 icon={<Paperclip size={13} aria-hidden />} onClick={() => fileInputRef.current?.click()}>Attach</Button>
             </div>
           </div>
+          <div className="flex items-center gap-3 mt-2 text-[12px] text-[#475569] flex-wrap">
+            <label className="flex items-center gap-1">
+              For
+              <select aria-label="Message for" value={targetNodeKey} onChange={e => setTargetNodeKey(e.target.value)} disabled={isOffline}
+                className="border border-[#CDD5DF] rounded-[4px] px-1 py-0.5 text-[12px] bg-white">
+                <option value="">every node</option>
+                {nodeKeys.map(k => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={nextAttemptOnly} onChange={e => setNextAttemptOnly(e.target.checked)} disabled={isOffline} />
+              only the next attempt{targetNodeKey ? ` of ${targetNodeKey}` : ''}
+            </label>
+          </div>
           <p aria-live="polite" className="sr-only">
             {attachMutation.isPending ? 'Uploading attachment…' : attachMutation.isSuccess ? 'Attachment uploaded.' : ''}
           </p>
@@ -2462,6 +2481,24 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
       </div>
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
+  );
+}
+
+/**
+ * V12-18: which prompts a person's message reaches — every node, one node, and/or only the next attempt (then whether it was
+ * delivered, after which no later attempt gets it).
+ */
+function MessageAudience({ message }: { message: MessageRef }) {
+  if (!message.targetNodeKey && !message.nextAttemptOnly) return null;
+  const who = message.targetNodeKey ? `for ${message.targetNodeKey}` : 'for every node';
+  const label = message.nextAttemptOnly
+    ? `${who}, next attempt only — ${message.delivered ? 'delivered' : 'waiting'}`
+    : who;
+  return (
+    <span data-testid={`audience-${message.messageId}`}
+      className={`text-[12px] px-1.5 py-0.5 rounded-[4px] ${message.nextAttemptOnly && message.delivered ? 'bg-[#F3F5F8] text-[#475569]' : 'bg-[#E0F2FE] text-[#075985]'}`}>
+      {label}
+    </span>
   );
 }
 
@@ -2517,6 +2554,16 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
     enabled: !isOffline && !!activeRunId,
   });
 
+  // V12-18: the nodes a chat message can be aimed at — the AGENT nodes of the newest run's workflow.
+  const chatRunId = activeRunId ?? [...(cardQuery.data?.runs ?? [])].sort((a, b) => b.runNumber - a.runNumber)[0]?.runId;
+  const chatNodesQuery = useQuery({
+    queryKey: ['runGraphNodes', chatRunId],
+    queryFn: async () => (await getRunGraph(chatRunId!, { ...withSessionToken(), query: { limit: '1' } })) as unknown as RunGraphResponse,
+    enabled: !isOffline && !!chatRunId && activeTab === 'task-chat',
+    staleTime: 60_000,
+  });
+  const chatNodeKeys = (chatNodesQuery.data?.nodes ?? []).filter(n => n.type === 'AGENT').map(n => n.key);
+
   const onActionSettled = () => {
     queryClient.invalidateQueries({ queryKey: ['workItemAuthoritative', projectId, workItemId] });
     queryClient.invalidateQueries({ queryKey: ['taskFamily', projectId, familyId] });
@@ -2545,7 +2592,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} nodeFilter={evidenceNode} onNodeFilterChange={setEvidenceNode} />}
-      {activeTab === 'task-chat'       && <ChatTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} onViewNode={nodeRunId => { setFocusNodeRunId(nodeRunId); onTabChange('task-graph', { projectId, taskId: workItemId }); }} />}
+      {activeTab === 'task-chat'       && <ChatTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} nodeKeys={chatNodeKeys} onViewNode={nodeRunId => { setFocusNodeRunId(nodeRunId); onTabChange('task-graph', { projectId, taskId: workItemId }); }} />}
       </div>
     </div>
   );

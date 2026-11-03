@@ -90,8 +90,12 @@ WHERE ea.id = ?`, req.AttemptID).Scan(&attemptWorkItemID, &attemptProjectID)
 	}
 	m.Pinned = req.Pinned
 	m.DisplayOnly, m.NodeRunID = req.DisplayOnly, req.NodeRunID
+	m.TargetNodeKey, m.NextAttemptOnly = req.TargetNodeKey, req.NextAttemptOnly
 
-	var attemptIDColumn, nodeRunIDColumn any
+	var attemptIDColumn, nodeRunIDColumn, targetNodeKeyColumn any
+	if req.TargetNodeKey != "" {
+		targetNodeKeyColumn = req.TargetNodeKey
+	}
 	if req.AttemptID != "" {
 		attemptIDColumn = req.AttemptID
 	}
@@ -99,11 +103,12 @@ WHERE ea.id = ?`, req.AttemptID).Scan(&attemptWorkItemID, &attemptProjectID)
 		nodeRunIDColumn = req.NodeRunID
 	}
 	_, insertErr := tx.ExecContext(ctx, `
-INSERT INTO messages (id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned, display_only, node_run_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO messages (id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned, display_only, node_run_id,
+    target_node_key, next_attempt_only)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(m.ID), string(m.ProjectID), string(m.WorkItemID), attemptIDColumn, m.Sequence,
 		m.Actor, string(m.Role), string(m.ContentArtifactID), m.CorrelationID, formatWorkflowTime(m.CreatedAt), m.Pinned,
-		m.DisplayOnly, nodeRunIDColumn,
+		m.DisplayOnly, nodeRunIDColumn, targetNodeKeyColumn, m.NextAttemptOnly,
 	)
 	if insertErr == nil {
 		return m, nil
@@ -126,7 +131,8 @@ func (r messageRepository) GetMessage(ctx context.Context, id string) (message.M
 
 func loadMessageTx(ctx context.Context, tx *sql.Tx, id string) (message.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned, display_only, node_run_id
+SELECT id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned, display_only, node_run_id,
+    target_node_key, next_attempt_only
 FROM messages WHERE id = ?`, id)
 	m, err := scanMessageRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -137,11 +143,12 @@ FROM messages WHERE id = ?`, id)
 
 func scanMessageRow(row repositoryRowScanner) (message.Message, error) {
 	var id, projectID, workItemID, actor, role, contentArtifactID, correlationID, createdAtRaw string
-	var attemptIDRaw, nodeRunIDRaw sql.NullString
+	var attemptIDRaw, nodeRunIDRaw, targetNodeKeyRaw sql.NullString
 	var sequence uint64
-	var pinned, displayOnly bool
+	var pinned, displayOnly, nextAttemptOnly bool
 	if err := row.Scan(
 		&id, &projectID, &workItemID, &attemptIDRaw, &sequence, &actor, &role, &contentArtifactID, &correlationID, &createdAtRaw, &pinned, &displayOnly, &nodeRunIDRaw,
+		&targetNodeKeyRaw, &nextAttemptOnly,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return message.Message{}, err
@@ -166,6 +173,7 @@ func scanMessageRow(row repositoryRowScanner) (message.Message, error) {
 	}
 	m.Pinned = pinned
 	m.DisplayOnly, m.NodeRunID = displayOnly, nodeRunIDRaw.String
+	m.TargetNodeKey, m.NextAttemptOnly = targetNodeKeyRaw.String, nextAttemptOnly
 	return m, nil
 }
 
