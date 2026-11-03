@@ -1469,6 +1469,41 @@
       }
     },
     {
+      "operationId": "getProjectCosts",
+      "method": "GET",
+      "path": "/projects/{projectId}/costs",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.ProjectCosts",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Usage",
+            "jsonTag": "usage",
+            "type": "runtime.UsageView"
+          },
+          {
+            "name": "Batches",
+            "jsonTag": "batches",
+            "type": "[]runtime.BatchCost"
+          },
+          {
+            "name": "ProviderLimits",
+            "jsonTag": "providerLimits",
+            "type": "[]runtime.ProviderLimit"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getProjectDefinition",
       "method": "GET",
       "path": "/projects/{projectId}/definitions/{kind}/{id}",
@@ -5084,6 +5119,42 @@
           {
             "name": "Version",
             "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setWorkItemBudget",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/budget",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.SetBudgetRequest",
+        "fields": [
+          {
+            "name": "BudgetUSD",
+            "jsonTag": "budgetUsd,omitempty",
+            "type": "*float64"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "runtime.BudgetView",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "BudgetUSD",
+            "jsonTag": "budgetUsd,omitempty",
+            "type": "*float64"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
             "type": "uint64"
           }
         ]

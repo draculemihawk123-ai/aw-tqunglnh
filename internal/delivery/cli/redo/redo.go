@@ -56,6 +56,10 @@ func init() {
 		AppOperation: commandTypeUseNewCLI, HTTPOperationID: "useNewCli",
 	})
 	cli.MustRegister(cli.Descriptor{
+		Path: []string{"work-item", "budget"}, Scope: cli.ScopeProject,
+		AppOperation: "SetWorkItemBudget", HTTPOperationID: "setWorkItemBudget",
+	})
+	cli.MustRegister(cli.Descriptor{
 		Path: []string{"work-item", "queue"}, Scope: cli.ScopeProject,
 		AppOperation: commandTypeSetQueue, HTTPOperationID: "setWorkItemQueue",
 	})
@@ -337,6 +341,62 @@ func Queue(ctx context.Context, deps Dependencies, args []string, stdout, stderr
 		return runtime.SetWorkItemQueue(ctx, deps.UoW, envelope.Command, runtime.SetQueueRequest{
 			ProjectID: projectID, WorkItemID: workItemID, Queued: wire.Queued, Position: wire.Position, WaitsForWorkItemID: wire.WaitsForWorkItemID,
 		})
+	})
+	if err != nil {
+		return err
+	}
+	return cli.EncodeCommandResult(stdout, cli.ResultEnvelope{
+		IdempotencyKey: envelope.Command.IdempotencyKey, Replayed: dispatched.Replayed, Result: dispatched.Result,
+	})
+}
+
+type setBudgetWire struct {
+	BudgetUSD *float64 `json:"budgetUsd,omitempty"`
+}
+
+type setBudgetHash struct {
+	WorkItemID string        `json:"workItemId"`
+	Body       setBudgetWire `json:"body"`
+}
+
+// Budget implements `aw work-item budget <rootWorkItemId> --usd <amount> | --clear` (V12-23, ADR-057): the spending cap of a batch.
+func Budget(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("work-item budget", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	principalConfigPath := cli.BindPrincipalFlag(fs)
+	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
+	usd := fs.Float64("usd", 0, "the cap in US dollars (as the provider CLI reports cost)")
+	clear := fs.Bool("clear", false, "remove the budget")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" || (*usd <= 0) == !*clear {
+		return usageErrorf("usage: aw work-item budget <rootWorkItemId> (--usd <amount> | --clear)")
+	}
+	workItemID := fs.Arg(0)
+	wire := setBudgetWire{}
+	if !*clear {
+		v := *usd
+		wire.BudgetUSD = &v
+	}
+	principal, err := loadPrincipal(*principalConfigPath)
+	if err != nil {
+		return err
+	}
+	projectID, err := loadWorkItemProjectID(ctx, deps.UoW, workItemID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(setBudgetHash{WorkItemID: workItemID, Body: wire})
+	if err != nil {
+		return err
+	}
+	envelope := cli.BuildEnvelope(cli.EnvelopeRequest{
+		Principal: principal, CommandType: "SetWorkItemBudget", Scope: ports.ProjectScope(projectID),
+		NormalizedPayload: payload, IdempotencyKey: *idempotencyKey, IDSource: deps.Service.IDs, Now: deps.Now,
+	})
+	dispatched, err := cli.Dispatch(ctx, deps.UoW, envelope.Command, func(ctx context.Context) (any, error) {
+		return runtime.SetWorkItemBudget(ctx, deps.UoW, envelope.Command, projectID, workItemID, wire.BudgetUSD)
 	})
 	if err != nil {
 		return err

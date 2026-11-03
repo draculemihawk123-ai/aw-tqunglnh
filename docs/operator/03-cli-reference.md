@@ -41,13 +41,13 @@ Resource commands (aw <resource> <action> [flags]):
   release-set            abandon|create|list|local-commit|local-commit status|seal|show
   repository             list|onboarding|readiness|register|retry-probe|show
   repository-workspace   adopt-head|base-status|diff|log|reconcile|restore-parked|show|source|sync-base
-  run                    cancel|diagnostics|graph|show|start|timeline
+  run                    cancel|costs|diagnostics|graph|needs-you|show|start|timeline
   scope-expansion        approve|list|reject|request|show|withdraw
   settings               show|update
   task-family            show
   version                diff|show
   wait                   signal
-  work-item              cancel|children|create|create-child|detail|kanban|list|mark-ready|queue|queue-show|readiness|recreate|redo-preview|retry|show|use-new-cli
+  work-item              budget|cancel|children|create|create-child|detail|kanban|list|mark-ready|queue|queue-show|readiness|recreate|redo-preview|retry|show|use-new-cli
   workspace-set          release|release-context|show
 
 Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):

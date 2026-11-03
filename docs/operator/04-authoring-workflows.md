@@ -412,6 +412,29 @@ moves on when it is `DONE`) or take the next task out. A task that cannot start 
 `QUEUED` with the reason in `problem`, and the next check tries again. Only a `READY`-able work item with a pinned workflow
 version can be queued; a `DONE` or `CANCELLED` one is refused.
 
+## Costs, budgets and provider limits (V12-23)
+
+The project's **Costs** page (CLI: `aw run costs --project-id <p>`) shows what the work cost, by task, by batch (a root work
+item and every task under it) and in all: tokens in and out and US dollars, summed over every attempt of every run. The
+figures are what the provider CLI reported (`total_cost_usd` for Claude), not a bill; an attempt that reported nothing counts
+as unknown, not as zero.
+
+A **budget** caps a batch:
+
+```bash
+aw work-item budget <rootWorkItemId> --usd 20      # or --clear
+```
+
+(HTTP: `POST /work-items/{id}/budget {"budgetUsd": 20}`, Idempotency-Key required; **Set budget** on the Costs page.) The page
+marks a batch *near budget* at 80% and *over budget* at 100%. Over budget, the family queue (V12-19) starts no more of its tasks
+(`waiting` says `paused: the batch spent …`); a run already going is not stopped. Raise or remove the budget to go on. A budget
+is set on a root work item only.
+
+**Provider usage limits.** The Claude CLI reports no remaining-quota figure, so aw cannot warn before a limit; it knows a limit
+once it is hit: the node is BLOCKED with `PROVIDER_QUOTA_EXCEEDED` and resumes by itself after the reset time (V12-03). While
+such a blocker is open anywhere in the installation (a provider account's limit is not per project), every family queue is
+paused, and the Costs page lists the limit with the time aw resumes.
+
 ## Setting up a repository before an agent writes — readiness profile and baseline (V9-08)
 
 Initialization is a phase of its own with evidence, not something an agent discovers by failing. A repository

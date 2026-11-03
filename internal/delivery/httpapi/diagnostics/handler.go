@@ -57,3 +57,16 @@ func handleListNeedsYou(deps Dependencies) http.HandlerFunc {
 		_ = httpapi.EncodeResult(w, http.StatusOK, list, "")
 	}
 }
+
+// handleGetProjectCosts is GET /projects/{projectId}/costs (V12-23): runtime.GetProjectCosts, a read.
+func handleGetProjectCosts(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := strings.TrimSpace(r.PathValue("projectId"))
+		costs, err := runtime.GetProjectCosts(r.Context(), deps.UOW, redact.NewMatcher(), projectID)
+		if err != nil {
+			writeQueryError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, costs, "")
+	}
+}

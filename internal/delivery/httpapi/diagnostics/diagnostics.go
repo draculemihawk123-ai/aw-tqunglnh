@@ -94,4 +94,10 @@ func RegisterRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.NeedsYou{},
 		Handler: handleListNeedsYou(deps),
 	})
+	// V12-23: what the work cost, by task and batch, budgets, and provider limits hit now.
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/costs", OperationID: "getProjectCosts",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.ProjectCosts{},
+		Handler: handleGetProjectCosts(deps),
+	})
 }

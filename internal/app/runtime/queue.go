@@ -6,7 +6,8 @@
 //   - no run of the family may be active (a run that is not SUCCEEDED, FAILED or CANCELLED);
 //   - the task the queue started before it must be DONE — a task that failed or was cancelled pauses the queue (fail-closed): the
 //     operator decides (run it again, or take it out of the queue);
-//   - the task the head waits for, if any, must be DONE.
+//   - the task the head waits for, if any, must be DONE;
+//   - (V12-23) the batch is under its budget and no provider usage limit is hit.
 //
 // The head starts through StartWorkflowRun with the WorkItem's pinned workflow version, as an operator would. When it cannot start
 // (not READY, a baseline not admitted, …) the entry stays QUEUED with the reason in Problem, and the next sweep tries again.
@@ -271,6 +272,10 @@ func queueHeadTx(ctx context.Context, tx ports.Tx, familyID string) (*ports.Queu
 		if other.Status != workdomain.WorkItemDone {
 			return nil, fmt.Sprintf("waiting for %q (%s)", other.Title, other.Status), nil
 		}
+	}
+	// V12-23 (ADR-057): over the batch's budget, or a provider usage limit hit, the queue starts nothing more.
+	if why, err := queueSpendingStopTx(ctx, tx, head.ProjectID, familyID); err != nil || why != "" {
+		return nil, why, err
 	}
 	return head, "", nil
 }

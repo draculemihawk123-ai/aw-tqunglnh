@@ -2,7 +2,7 @@ import React from 'react';
 import {
   Stethoscope, LayoutGrid, ListTree, Columns3, Layers, Settings2,
   GanttChartSquare, MessageSquare, Package, Boxes, Wrench,
-  Eye, FileCode2, Network, ClipboardList, SquareTerminal,
+  Eye, FileCode2, Network, ClipboardList, SquareTerminal, Coins,
 } from '../icons';
 
 export type NavRoute =
@@ -13,6 +13,7 @@ export type NavRoute =
   | 'project-components'
   | 'project-definitions'
   | 'project-needs-you'
+  | 'project-costs'
   | 'task-overview'
   | 'task-graph'
   | 'task-workspace'
@@ -37,6 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'projects',            label: 'Projects',        Icon: LayoutGrid,      group: 'top' },
   { id: 'project-overview',    label: 'Overview',        Icon: Eye,             group: 'project' },
   { id: 'project-needs-you',   label: 'Needs you',       Icon: ClipboardList,   group: 'project' },
+  { id: 'project-costs',       label: 'Costs',           Icon: Coins,           group: 'project' },
   { id: 'project-board',       label: 'Board',           Icon: Columns3,        group: 'project' },
   { id: 'project-components',  label: 'Components',      Icon: Boxes,           group: 'project' },
   { id: 'project-definitions', label: 'Definitions',     Icon: FileCode2,       group: 'project' },

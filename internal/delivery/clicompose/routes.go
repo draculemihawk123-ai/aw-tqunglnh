@@ -276,6 +276,9 @@ func workItemRoutes() []Route {
 			return redo.Queue(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "queue"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Budget(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "budget"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return redo.QueueShow(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "queue-show"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -351,6 +354,9 @@ func runRoutes() []Route {
 		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return run.NeedsYou(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "run", "needs-you"),
+		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return run.Costs(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "run", "costs"),
 		route(NeedUoW|NeedIsolation|NeedAgents, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return noderun.RetryBlocked(ctx, noderun.Dependencies{
 				UOW: d.UoW, IDs: d.ids(), Isolation: d.Isolation, Agents: d.Agents,

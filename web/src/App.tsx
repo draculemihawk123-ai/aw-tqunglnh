@@ -22,6 +22,7 @@ import { Settings2 } from './components/icons';
 import { ControlTooltip } from './components/ControlTooltip';
 import { RepairAudit } from './screens/RepairAudit';
 import { NeedsYouScreen, needsYouQueryOptions, useNeedsYouNotifications } from './screens/NeedsYou';
+import { CostsScreen } from './screens/Costs';
 import { FIXTURE_TASK_ID, PROJECT_SCOPED_ROUTES, matchPath, pathFor } from './routes';
 
 const TASK_ROUTES: NavRoute[] = ['task-overview', 'task-graph', 'task-workspace', 'task-evidence', 'task-chat'];
@@ -157,6 +158,7 @@ export default function App() {
         : null;
     }
     if (route === 'project-needs-you') return project ? <NeedsYouScreen projectId={project.id} isOffline={isOffline} onOpenTask={handleOpenTask} /> : null;
+    if (route === 'project-costs') return project ? <CostsScreen projectId={project.id} isOffline={isOffline} onOpenTask={handleOpenTask} /> : null;
     if (route === 'project-definitions') return <DefinitionsScreen project={projectSummary} initialScope="project" isOffline={isOffline} />;
     if (route === 'global-definitions') return <DefinitionsScreen project={projectSummary} initialScope="global" isOffline={isOffline} />;
     if (route === 'system-diagnostics') return <RunDiagnosticsScreen isOffline={isOffline} />;

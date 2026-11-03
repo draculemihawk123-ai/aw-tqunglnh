@@ -212,6 +212,8 @@ func PublicOperations() []PublicOperation {
 		{Name: "GetRunTimeline", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getRunTimeline")}, Symbol: runtimeApp + ".GetRunTimeline"},
 		{Name: "GetRunDiagnostics", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getRunDiagnostics")}, Symbol: runtimeApp + ".GetRunDiagnostics"},
 		{Name: "RetryBlockedActivation", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("retryBlockedActivation")}, Symbol: runtimeApp + ".RetryBlockedActivationHandler.Retry"},
+		{Name: "SetWorkItemBudget", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("setWorkItemBudget")}, Symbol: "internal/app/runtime.SetWorkItemBudget"},
+		{Name: "GetProjectCosts", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getProjectCosts")}, Symbol: "internal/app/runtime.GetProjectCosts"},
 		{Name: "SetWorkItemQueue", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("setWorkItemQueue")}, Symbol: "internal/app/runtime.SetWorkItemQueue"},
 		{Name: "GetFamilyQueue", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkItemQueue")}, Symbol: "internal/app/runtime.GetFamilyQueue"},
 		{Name: "UseNewCli", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("useNewCli")}, Symbol: "internal/app/cliupgrade.UseNewCLI"},

@@ -530,6 +530,18 @@ export function getNodeRunDetail(nodeRunId: string, opts: RequestOptions = {}): 
   return request<GetNodeRunDetailResponse>("GET", `/node-runs/${nodeRunId}`, undefined, opts);
 }
 
+export interface GetProjectCostsResponse {
+  projectId: string;
+  usage: unknown;
+  batches: unknown[];
+  providerLimits: unknown[];
+}
+
+// GET /projects/{projectId}/costs (scope: PROJECT)
+export function getProjectCosts(projectId: string, opts: RequestOptions = {}): Promise<GetProjectCostsResponse> {
+  return request<GetProjectCostsResponse>("GET", `/projects/${projectId}/costs`, undefined, opts);
+}
+
 export interface GetProjectDefinitionResponse {
   id: string;
   kind: unknown;
@@ -1676,6 +1688,21 @@ export interface SealReleaseSetResponse {
 // POST /projects/{projectId}/release-sets/{releaseSetId}/seal (scope: PROJECT)
 export function sealReleaseSet(projectId: string, releaseSetId: string, body: unknown, opts: RequestOptions = {}): Promise<SealReleaseSetResponse> {
   return request<SealReleaseSetResponse>("POST", `/projects/${projectId}/release-sets/${releaseSetId}/seal`, body, opts);
+}
+
+export interface SetWorkItemBudgetRequest {
+  budgetUsd?: number | null;
+}
+
+export interface SetWorkItemBudgetResponse {
+  workItemId: string;
+  budgetUsd?: number | null;
+  version?: number;
+}
+
+// POST /work-items/{workItemId}/budget (scope: PROJECT)
+export function setWorkItemBudget(workItemId: string, body: SetWorkItemBudgetRequest, opts: RequestOptions = {}): Promise<SetWorkItemBudgetResponse> {
+  return request<SetWorkItemBudgetResponse>("POST", `/work-items/${workItemId}/budget`, body, opts);
 }
 
 export interface SetWorkItemQueueRequest {

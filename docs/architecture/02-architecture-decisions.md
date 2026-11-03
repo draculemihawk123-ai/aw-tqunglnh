@@ -1586,9 +1586,26 @@ definition và diff version.
 
 **Hệ quả:** route 121, 122; hai dòng UX Screen 3 (6, 7); parity; server cần Python khi dùng `--project-manifest`.
 
-## 59. Baseline sau review thiết kế
+## 59. ADR-057 — Chi phí theo task/đợt/project từ số liệu của provider; trần ngân sách theo WorkItem gốc; hàng đợi dừng khi vượt hoặc chạm hạn mức
 
-ADR-001…056 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-23, UX-35, UX-36):** chi phí chỉ thấy theo từng run; không có tổng theo đợt việc, không có trần, và hàng đợi
+(V12-19) không biết tiền hay hạn mức.
+
+**Quyết định:**
+
+1. `GetProjectCosts` (`GET /projects/{id}/costs`, `aw run costs`): tổng token và USD do CLI của provider báo (event
+   `USAGE_REPORTED`, như V9-13a) theo task, theo đợt (WorkItem gốc và mọi task dưới nó) và cả project. Không phải hóa đơn.
+2. Bảng `work_item_budgets` (migration 0059), `SetWorkItemBudget` (`POST /work-items/{id}/budget`, `aw work-item budget`): trần
+   USD cho một WorkItem **gốc**. Gần (≥ 80%) và vượt (≥ 100%) hiện trên trang Costs.
+3. Hàng đợi của family không chạy task mới khi đợt đã vượt trần, hoặc khi có blocker `PROVIDER_QUOTA_EXCEEDED` đang mở ở bất kỳ
+   đâu trong bản cài (hạn mức là của tài khoản provider). Run đang chạy không bị dừng.
+4. CLI của Claude không trả hạn mức còn lại; aw chỉ biết hạn mức khi chạm (V12-03) và giờ reset. Không đoán.
+
+**Hệ quả:** route 123, 124; hai dòng UX Screen 7 (21, 22); parity; `Tx.Budgets()`.
+
+## 60. Baseline sau review thiết kế
+
+ADR-001…057 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1641,6 +1658,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-057 (V12-23): trang chi phí theo task/đợt/project từ số liệu provider, trần ngân sách theo WorkItem gốc; hàng đợi dừng khi vượt trần hoặc chạm hạn mức provider.
 - ADR-056 (V12-21): giao diện publish manifest bằng cách server chạy `aw-publish.py` của kit trên đường dẫn người vận hành cấu hình lúc khởi động.
 - ADR-055 (V12-20) cho phép fetch nhánh gốc từ `origin` khi người vận hành đồng bộ worktree (chỉ fast-forward, không push); release xóa nhánh worktree đã merge.
 - ADR-054 (V12-19) thêm hàng đợi task của family: worker chạy task kế khi task trước `DONE`, task hỏng làm hàng đợi dừng.

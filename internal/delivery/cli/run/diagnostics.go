@@ -22,6 +22,28 @@ func init() {
 		Path: []string{"run", "needs-you"}, Scope: cli.ScopeProject,
 		AppOperation: "ListNeedsYou", HTTPOperationID: "listNeedsYou",
 	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"run", "costs"}, Scope: cli.ScopeProject,
+		AppOperation: "GetProjectCosts", HTTPOperationID: "getProjectCosts",
+	})
+}
+
+// Costs implements `aw run costs --project-id <id>` (V12-23): spend by task and batch, budgets, provider limits hit now.
+func Costs(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("run costs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	projectID := cli.BindProjectFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*projectID) == "" {
+		return errors.New("cli: run costs: --project-id is required")
+	}
+	costs, err := runtime.GetProjectCosts(ctx, deps.UOW, deps.Matcher, *projectID)
+	if err != nil {
+		return err
+	}
+	return cli.EncodeQueryResult(stdout, costs)
 }
 
 // NeedsYou implements `aw run needs-you --project-id <id>` (V12-16): every approval waiting for a decision and every open blocker of

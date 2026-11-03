@@ -85,6 +85,11 @@ func RegisterRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Handler: retryHandler(deps),
 	})
 	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/work-items/{workItemId}/budget", OperationID: "setWorkItemBudget",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: SetBudgetRequest{}, ResponseSchema: runtime.BudgetView{},
+		Handler: setBudgetHandler(deps),
+	})
+	routes.Register(httpapi.RouteDescriptor{
 		Method: http.MethodGet, Path: "/work-items/{workItemId}/queue", OperationID: "getWorkItemQueue",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: QueueResponse{},
 		Handler: getQueueHandler(deps),
@@ -272,6 +277,46 @@ func useNewCLIHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 		_ = httpapi.EncodeResult(w, http.StatusCreated, UseNewCLIResponse{Result: result}, "")
+	}
+}
+
+// SetBudgetRequest is POST /work-items/{workItemId}/budget's body (V12-23, ADR-057): the spending cap of a root work item and every
+// task under it, in US dollars as the provider reports cost; null or omitted removes it.
+type SetBudgetRequest struct {
+	BudgetUSD *float64 `json:"budgetUsd,omitempty"`
+}
+
+func setBudgetHandler(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		workItemID := r.PathValue("workItemId")
+		projectID, ok := resolveProject(w, ctx, deps, workItemID)
+		if !ok {
+			return
+		}
+		var body SetBudgetRequest
+		cmd, ok := prepareCommand(w, r, projectID, "SetWorkItemBudget", &body, func() any {
+			return struct {
+				WorkItemID string           `json:"workItemId"`
+				Body       SetBudgetRequest `json:"body"`
+			}{workItemID, body}
+		})
+		if !ok {
+			return
+		}
+		view, err := runtime.SetWorkItemBudget(ctx, deps.UOW, cmd, projectID, workItemID, body.BudgetUSD)
+		switch {
+		case errors.Is(err, runtime.ErrBudgetNotRoot), errors.Is(err, runtime.ErrBudgetInvalid):
+			httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(), nil)
+			return
+		case errors.Is(err, ports.ErrOptimisticConflict):
+			httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
+			return
+		case err != nil:
+			writeRedoError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, view, "")
 	}
 }
 
