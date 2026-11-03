@@ -147,11 +147,11 @@ func toRunManifestAmendmentView(a runtimedomain.RunManifestAmendment) RunManifes
 // node's own compiled configuration (AuthorizedRoles/RequestedEvidenceKinds/
 // EscalationOutcome, pinned onto the request when it was created — never
 // secret or authorization MATERIAL, only the role NAMES the node itself
-// declares). Deliberately NOT exposed: DecidedBy/DecidedRole/Reason/
-// DecidedAt — the decision's own audit trail, of which Reason is free text
-// that would need this package's redact.Matcher (GetRunDetail takes none,
-// exactly like it takes no SharedState) — ResolvedOutcome is enough for an
-// operator to see what was decided.
+// declares). Deliberately NOT exposed: DecidedRole/Reason/DecidedAt — Reason
+// is free text that would need this package's redact.Matcher (GetRunDetail
+// takes none, exactly like it takes no SharedState). DecidedBy is exposed as
+// ResolvedBy since V12-11 (ADR-051): who decided is an actor id, the same
+// kind of value a blocker view's resolvedBy already shows.
 //
 // State is the real runtimedomain.ApprovalRequestState string (PENDING is
 // the only ACTIONABLE state; DECIDED/ESCALATED/CANCELLED are history).

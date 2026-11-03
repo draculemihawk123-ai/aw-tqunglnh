@@ -206,16 +206,18 @@ func TestGetRunDetail_SQLite_ApprovalAndWait_DiscoverableThroughLifecycle(t *tes
 		t.Fatalf("detail.State = %s, want VERIFYING (END reached — the Run can finish over the public surface)", detail.State)
 	}
 
-	// --- 4. Nothing free-text or actor-identifying leaks through ---
-	// The decision's own audit trail (DecidedBy/DecidedRole/Reason) is
-	// deliberately NOT part of the view (see ApprovalRequestView's doc
+	// --- 4. Nothing free-text leaks through ---
+	// DecidedRole/Reason stay out of the view (see ApprovalRequestView's doc
 	// comment): Reason is free text that GetRunDetail has no redact.Matcher
-	// for.
+	// for. Who decided is shown as resolvedBy (V12-11, ADR-051).
+	if detail.ApprovalRequests[0].ResolvedBy != "operator-1" {
+		t.Fatalf("ResolvedBy = %q, want the deciding actor operator-1", detail.ApprovalRequests[0].ResolvedBy)
+	}
 	wire, err := json.Marshal(detail)
 	if err != nil {
 		t.Fatalf("marshal detail: %v", err)
 	}
-	for _, leaked := range []string{"ship it", "operator-1", `"payload"`, "release-1"} {
+	for _, leaked := range []string{"ship it", `"payload"`, "release-1"} {
 		if strings.Contains(string(wire), leaked) {
 			t.Fatalf("run detail JSON leaks %q: %s", leaked, wire)
 		}
