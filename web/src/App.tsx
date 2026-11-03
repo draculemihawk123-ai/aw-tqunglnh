@@ -147,7 +147,7 @@ export default function App() {
     if (route === 'doctor') return <DoctorScreen isOffline={isOffline} />;
     const projectProps = { projectId: project?.id, onSelectProject: handleSelectProject, isOffline };
     if (route === 'projects') return <ProjectsScreen view="list" {...projectProps} />;
-    if (route === 'project-overview') return <ProjectsScreen view="overview" {...projectProps} onNavigate={navigate} />;
+    if (route === 'project-overview') return <ProjectsScreen view="overview" {...projectProps} onNavigate={navigate} onOpenTask={handleOpenTask} />;
     if (route === 'project-components') return <ProjectsScreen view="components" {...projectProps} onNavigate={navigate} />;
     if (route === 'project-board') {
       return projectSummary ? <KanbanScreen key={projectSummary.id} project={projectSummary} onOpenTask={handleOpenTask} isOffline={isOffline} /> : null;

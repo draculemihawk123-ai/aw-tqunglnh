@@ -412,6 +412,13 @@ moves on when it is `DONE`) or take the next task out. A task that cannot start 
 `QUEUED` with the reason in `problem`, and the next check tries again. Only a `READY`-able work item with a pinned workflow
 version can be queued; a `DONE` or `CANCELLED` one is refused.
 
+## The project's status page (V12-24)
+
+A project's **Overview** starts with **Status**: every batch (a root work item and every task under it) with a progress bar
+(tasks done out of tasks not cancelled), how many are blocked or running, and what the batch cost; what is running now; and how
+many things wait for you. **Export report** saves the same as Markdown (`STATUS-<project>-<date>.md`): a checklist per batch with
+each task's status, running runs and blockers, then what waits for you — the file that used to be kept by hand.
+
 ## Costs, budgets and provider limits (V12-23)
 
 The project's **Costs** page (CLI: `aw run costs --project-id <p>`) shows what the work cost, by task, by batch (a root work

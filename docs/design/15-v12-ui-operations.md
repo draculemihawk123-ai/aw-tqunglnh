@@ -556,6 +556,11 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 
 - Trang Overview của project: tiến độ theo đợt và WorkItem gốc, việc đang chờ, lịch sử gần đây, có xuất báo cáo. Thay cho file
   `STATUS.md` mà người vận hành đang tự giữ.
+- **Kết quả (đã xong, chỉ web):** panel **Status** trên Overview của project (`web/src/screens/ProjectStatus.tsx`): từng đợt (WorkItem
+  gốc và mọi task dưới nó, qua mọi tầng cha) với thanh tiến độ, số task xong/bị chặn/đang chạy, chi phí của đợt (V12-23); danh sách
+  đang chạy; số việc chờ người (V12-16). **Export report** tải `STATUS-<project>-<ngày>.md` cùng nội dung (`api/projectStatus.ts`).
+  Chưa làm: lịch sử có mốc thời gian (thẻ kanban không mang thời điểm; cần một truy vấn sự kiện gần đây). Test:
+  `projectStatus.test.ts`, `ProjectStatus.test.tsx`.
 
 ### V12-25 — Commit message theo quy ước repo (UX-13)
 
