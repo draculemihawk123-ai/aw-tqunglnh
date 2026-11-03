@@ -18,7 +18,7 @@ const tokens = (u?: Usage) => (u ? `${Math.round((u.inputTokens + u.cachedInputT
 /**
  * V12-23 (docs/design/15-v12-ui-operations.md, UX-35, UX-36, ADR-057): what the project's work cost — by task, by batch (a root work
  * item and its tasks) and in all — from what the provider CLI reported; a budget per batch (going over pauses its queue); and the
- * provider usage limits hit right now with when aw resumes. The CLI reports no remaining quota, so a limit shows once it is hit.
+ * provider usage limits hit right now with when aw resumes. aw does not read a remaining quota yet, so a limit shows once it is hit.
  */
 export function CostsScreen({ projectId, isOffline, onOpenTask }: { projectId: string; isOffline?: boolean; onOpenTask: (id: string) => void }) {
   const query = useQuery({

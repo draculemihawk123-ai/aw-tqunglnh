@@ -547,7 +547,8 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Kết quả (đã xong, ADR-057):** `GetProjectCosts` (`GET /projects/{id}/costs`, `aw run costs`) và trang **Costs**: token và USD
   theo task, đợt (WorkItem gốc) và project, từ `USAGE_REPORTED`. Trần ngân sách theo WorkItem gốc (`work_item_budgets`,
   migration 0059; `POST /work-items/{id}/budget`, `aw work-item budget`), cảnh báo gần/vượt; vượt thì hàng đợi V12-19 không chạy
-  task mới. Đã xác minh: Claude CLI không trả hạn mức còn lại, chỉ báo khi chạm (V12-03); khi có `PROVIDER_QUOTA_EXCEEDED` đang mở,
+  task mới. Hạn mức còn lại **chưa làm**: Claude CLI có in `rate_limit_event` nhưng adapter bỏ nội dung và cấu trúc trường chưa
+  được xác minh với CLI thật (cần bản ghi stream thật); aw chỉ biết khi chạm (V12-03). Khi có `PROVIDER_QUOTA_EXCEEDED` đang mở,
   mọi hàng đợi dừng và trang Costs hiện giờ chạy tiếp. Test: `costs_sqlite_test.go`, `Costs.test.tsx`; route inventory, security
   matrix, parity, contract golden.
 

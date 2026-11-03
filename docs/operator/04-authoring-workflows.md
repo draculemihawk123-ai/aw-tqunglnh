@@ -430,8 +430,9 @@ marks a batch *near budget* at 80% and *over budget* at 100%. Over budget, the f
 (`waiting` says `paused: the batch spent …`); a run already going is not stopped. Raise or remove the budget to go on. A budget
 is set on a root work item only.
 
-**Provider usage limits.** The Claude CLI reports no remaining-quota figure, so aw cannot warn before a limit; it knows a limit
-once it is hit: the node is BLOCKED with `PROVIDER_QUOTA_EXCEEDED` and resumes by itself after the reset time (V12-03). While
+**Provider usage limits.** aw does not show the remaining quota yet: the Claude CLI writes `rate_limit_event` lines into its
+stream, but aw does not read their fields (their shape has not been verified against a real CLI), so it cannot warn before a
+limit. It knows a limit once it is hit: the node is BLOCKED with `PROVIDER_QUOTA_EXCEEDED` and resumes by itself after the reset time (V12-03). While
 such a blocker is open anywhere in the installation (a provider account's limit is not per project), every family queue is
 paused, and the Costs page lists the limit with the time aw resumes.
 

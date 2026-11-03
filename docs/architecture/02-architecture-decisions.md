@@ -1599,7 +1599,10 @@ definition và diff version.
    USD cho một WorkItem **gốc**. Gần (≥ 80%) và vượt (≥ 100%) hiện trên trang Costs.
 3. Hàng đợi của family không chạy task mới khi đợt đã vượt trần, hoặc khi có blocker `PROVIDER_QUOTA_EXCEEDED` đang mở ở bất kỳ
    đâu trong bản cài (hạn mức là của tài khoản provider). Run đang chạy không bị dừng.
-4. CLI của Claude không trả hạn mức còn lại; aw chỉ biết hạn mức khi chạm (V12-03) và giờ reset. Không đoán.
+4. Hạn mức còn lại: CLI của Claude có in dòng `rate_limit_event` trong stream-json, nhưng adapter hiện chỉ ghi nó là
+   `STATUS_CHANGED` và bỏ nội dung; cấu trúc trường của nó **chưa được xác minh** (môi trường làm V12-23 không có CLI thật). Vì vậy
+   aw chỉ biết hạn mức khi chạm (V12-03) và giờ reset, không đoán số còn lại. Đọc `rate_limit_event` để hiện hạn mức còn lại và
+   dừng hàng đợi trước khi chạm là việc sau, cần một bản ghi stream thật để làm fixture.
 
 **Hệ quả:** route 123, 124; hai dòng UX Screen 7 (21, 22); parity; `Tx.Budgets()`.
 

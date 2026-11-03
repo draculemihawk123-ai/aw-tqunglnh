@@ -1,8 +1,8 @@
 // V12-23 (docs/design/15-v12-ui-operations.md, UX-35, UX-36, ADR-057): what the work of a project cost, by task, by batch (a root
 // work item and every task under it) and in all, from what the provider CLI reported (USAGE_REPORTED agent events; aw's figures are
 // the CLI's, not a bill); a spending cap per batch; and the provider usage limits that are hit right now (an open
-// PROVIDER_QUOTA_EXCEEDED blocker and when aw resumes). The Claude CLI reports no remaining-quota figure, so a limit is known when it
-// is hit, with its reset time — not before.
+// PROVIDER_QUOTA_EXCEEDED blocker and when aw resumes). The remaining quota is not read: the Claude CLI's rate_limit_event lines are
+// recorded without their fields (their shape is unverified), so a limit is known when it is hit, with its reset time — not before.
 package runtime
 
 import (
