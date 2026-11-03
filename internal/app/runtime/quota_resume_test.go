@@ -201,4 +201,9 @@ func TestListNeedsYou_ListsOpenBlockers(t *testing.T) {
 		list.Items[0].NodeRunID != nodeRunID || !strings.Contains(list.Items[0].Message, "hit your limit") {
 		t.Fatalf("needs you = %+v, want the one quota blocker", list)
 	}
+	// A known secret inside the reason is redacted, not only a reason that is exactly the secret.
+	redacted, err := runtime.ListNeedsYou(ctx, uow, redact.NewMatcher("hit your"), projectID)
+	if err != nil || strings.Contains(redacted.Items[0].Message, "hit your") {
+		t.Fatalf("message = %q, %v; want the known secret redacted", redacted.Items[0].Message, err)
+	}
 }

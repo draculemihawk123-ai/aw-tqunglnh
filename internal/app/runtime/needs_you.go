@@ -80,7 +80,7 @@ func ListNeedsYou(ctx context.Context, uow ports.UnitOfWork, matcher redact.Matc
 				result.Items = append(result.Items, NeedsYouItem{
 					Kind: NeedsYouBlocker, WorkItemID: string(item.ID), WorkItemTitle: item.Title, RunID: b.SourceRunID,
 					NodeRunID: b.SourceNodeRunID, Type: string(b.Type), BlockerID: string(b.ID),
-					Message: bound(matcher.String(b.Reason)), Since: b.OpenedAt,
+					Message: bound(redactText(matcher, b.Reason)), Since: b.OpenedAt,
 				})
 			}
 			runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, string(item.ID))
@@ -129,4 +129,10 @@ func ListNeedsYou(ctx context.Context, uow ports.UnitOfWork, matcher redact.Matc
 	sort.SliceStable(result.Items, func(i, j int) bool { return result.Items[i].Since.After(result.Items[j].Since) })
 	result.Count = len(result.Items)
 	return result, nil
+}
+
+// redactText replaces every known secret inside free text (Matcher.String only replaces a value that is exactly a secret).
+func redactText(matcher redact.Matcher, text string) string {
+	redacted, _ := matcher.Redact([]byte(text))
+	return string(redacted)
 }
