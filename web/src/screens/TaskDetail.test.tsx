@@ -381,7 +381,7 @@ describe('GraphTimelineTab (V7-12)', () => {
     vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 4, status: 'LIVE' } } as never);
     renderGraphTab();
 
-    await screen.findByRole('img', { name: /Workflow graph for run run-1/ });
+    await screen.findByRole('group', { name: /Workflow graph for run run-1/ });
     // agent-b is still RUNNING; join/gate/end were never reached — not yet fabricated as any other state.
     expect(screen.getAllByText('agent-b').length).toBeGreaterThan(0);
 
@@ -474,7 +474,7 @@ describe('GraphTimelineTab (V7-12)', () => {
     } as never);
     vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' } } as never);
     const { container } = renderGraphTab();
-    await screen.findByRole('img', { name: /Workflow graph/ });
+    await screen.findByRole('group', { name: /Workflow graph/ });
     await expectNoAxeViolations(container);
   });
 

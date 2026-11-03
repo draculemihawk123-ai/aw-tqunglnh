@@ -367,6 +367,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - P1-01: nhiều vòng, có node bị chặn rồi retry;
   - P2-01: hai run;
   - P0-03: chỉ sửa tài liệu.
+- **Kết quả (đã xong một phần):** `web/src/graph/RunGraphCanvas.tsx` thay canvas cũ trong tab Graph: hình dạng theo bảng, màu theo lần chạy
+  cuối (viền nét đứt khi chưa tới), dòng phụ là outcome cuối, `×n` theo số activation, `+n` cho cạnh thoát bị ẩn, cạnh đã đi tô màu kèm
+  `outcome ×n`, nút Main path / All paths (nhớ trong `localStorage`, bọc try/catch), SVG `role="group"`, mỗi node `role="button"` có
+  `aria-label` (tên, loại, trạng thái, số lần chạy), Enter/Space chọn node. Accessible List giữ nguyên. Test: `RunGraphCanvas.test.tsx`
+  với fixture dạng P2-02 (vòng lặp 3 lần, gate1 hỏng lần 4), axe. **Chưa có** fixture API ghi lại của 4 run thật (không có trong repo);
+  P1-01, P2-01 (hai run, cần V12-12) và P0-03 sẽ thêm khi có dữ liệu.
 
 ### V12-11 — API: tóm tắt kết quả và lý do dừng
 

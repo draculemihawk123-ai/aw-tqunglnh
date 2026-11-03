@@ -22,6 +22,7 @@ import {
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
 import type { RedoPreview } from '../api/redo';
+import { RunGraphCanvas } from '../graph/RunGraphCanvas';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
 import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
@@ -817,7 +818,6 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
   const entries = timelineQuery.data?.pages.flatMap(p => p.entries) ?? [];
   // Every page carries the whole run's total; the last page loaded is the freshest.
   const runUsage = timelineQuery.data?.pages[timelineQuery.data.pages.length - 1]?.usage;
-  const positions = computeLayout(nodes, possibleEdges);
 
   const latestActivationByNode = new Map<string, NodeActivationView>();
   for (const a of activations) {
@@ -837,8 +837,6 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
     }
   }
 
-  const maxX = Math.max(160, ...Object.values(positions).map(p => p.x)) + 100;
-  const maxY = Math.max(90, ...Object.values(positions).map(p => p.y)) + 60;
 
   const timelineEntries = selectedNodeKey ? entries.filter(e => e.nodeKey === selectedNodeKey) : entries;
 
@@ -920,67 +918,13 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
             </ol>
           </div>
         ) : (
-          <div className="flex-1 overflow-auto bg-[#FAFBFC]">
-            <svg width={maxX} height={maxY} className="mx-auto mt-4" role="img" aria-label={`Workflow graph for run ${runId}`}>
-              <defs>
-                <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#AAB4C3" />
-                </marker>
-                <marker id="arr-rw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#FCD34D" />
-                </marker>
-                <marker id="arr-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#3659E3" />
-                </marker>
-              </defs>
-              {possibleEdges.map((e, i) => {
-                const f = positions[e.from], t = positions[e.to];
-                if (!f || !t) return null;
-                const rw = e.kind === 'COMPLETION_REWORK';
-                const taken = (graphQuery.data?.pages.flatMap(p => p.takenEdges ?? []) ?? []).some(te => te.edgeKey === e.key || (te.fromNodeKey === e.from && te.outcome === e.outcome));
-                const x1 = f.x + 55, y1 = f.y + 29, x2 = t.x + 55, y2 = t.y;
-                const path = rw
-                  ? `M ${x1} ${y1} C ${x1 - 70} ${y1 + 50}, ${x2 - 70} ${y2 - 50}, ${x2} ${y2}`
-                  : `M ${x1} ${y1} L ${x2} ${y2}`;
-                const stroke = rw ? '#FCD34D' : taken ? '#3659E3' : '#CDD5DF';
-                return (
-                  <g key={e.key || i}>
-                    <path d={path} stroke={stroke} strokeWidth={taken ? 2 : 1.5}
-                      strokeDasharray={rw ? '5,3' : undefined} fill="none"
-                      markerEnd={`url(#${rw ? 'arr-rw' : taken ? 'arr-taken' : 'arr'})`} />
-                    <text x={(x1 + x2) / 2 + (rw ? -60 : 4)} y={(y1 + y2) / 2}
-                      fontSize="12" fill={rw ? '#92400E' : '#5D697A'} fontFamily="JetBrains Mono, monospace">{e.outcome}</text>
-                  </g>
-                );
-              })}
-              {nodes.map(node => {
-                const pos = positions[node.key];
-                if (!pos) return null;
-                const activation = latestActivationByNode.get(node.key);
-                const sel = selectedNodeKey === node.key;
-                const round = STRUCTURAL_KINDS.has(node.type);
-                const style = NODE_STYLE[activation?.state ?? ''] ?? NODE_STYLE[''];
-                return (
-                  // Mouse-only convenience, the same documented pattern ui.tsx's own
-                  // Table.onRowClick uses: never role="button"/tabIndex here, since
-                  // the outer <svg role="img"> is a single read-only picture and
-                  // ARIA forbids nesting an interactive control inside it. The real,
-                  // keyboard-reachable equivalent (select a node to filter the
-                  // timeline) lives in the Accessible List's own real <button> rows.
-                  <g key={node.key} onClick={() => setSelectedNodeKey(sel ? null : node.key)} style={{ cursor: 'pointer' }}
-                    aria-hidden>
-                    {round
-                      ? <circle cx={pos.x + 55} cy={pos.y + 12} r={22} fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
-                      : <rect x={pos.x} y={pos.y} width={110} height={58} rx="8" fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
-                    }
-                    <text x={pos.x + 55} y={pos.y + (round ? 8 : 17)} textAnchor="middle" fontSize="12" fontWeight="500" fill={style.fc} fontFamily="Inter, sans-serif">{node.type}</text>
-                    <text x={pos.x + 55} y={pos.y + (round ? 22 : 33)} textAnchor="middle" fontSize="12" fill={style.fc} fontFamily="Inter, sans-serif">{node.key}</text>
-                    {!round && activation && <text x={pos.x + 55} y={pos.y + 50} textAnchor="middle" fontSize="11" fill={style.fc} fontFamily="Inter, sans-serif" data-testid={`node-label-${node.key}`}>{nodeOneLiner(activation.nodeRunId, entries, Date.now())}</text>}
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
+          // V12-10: the run graph of the decided design (shapes, ×n, +n, Main/All paths, keyboard); the Accessible List stays.
+          <RunGraphCanvas
+            nodes={nodes} edges={possibleEdges} activations={activations}
+            takenEdges={graphQuery.data?.pages.flatMap(p => p.takenEdges ?? []) ?? []}
+            selectedNodeKey={selectedNodeKey} onSelect={key => setSelectedNodeKey(selectedNodeKey === key ? null : key)}
+            label={`Workflow graph for run ${runId}`}
+          />
         )}
       </div>
       {/* Drag handle */}
