@@ -533,6 +533,11 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 
 - Sau cổng DESIGN của `wf-feature-definition`, có nút "Create tasks from tasks.json": xem trước danh sách rồi tạo các WorkItem
   con. Thay cho `split-tasks.sh`.
+- **Kết quả (đã xong, chỉ web):** nút **Tasks from tasks.json** trên trang task mở `CreateTasksDialog`: đọc
+  `docs/features/<slug>/tasks.json` ở revision đã ghi của các repository trong family (hoặc dán vào), báo mục thiếu trường, xem trước
+  (repository, thư mục, số AC, lane, workflow theo rủi ro), tạo task con theo thứ tự với đúng tiêu đề/scope/contract của
+  `split-tasks.sh` (`web/src/api/tasksJson.ts`), mark ready và (tùy chọn) xếp vào hàng đợi của V12-19. Idempotency key theo task nên
+  tạo lại không nhân đôi. Không đổi API. Test: `tasksJson.test.ts`, `CreateTasksDialog.test.tsx`.
 
 ### V12-23 — Chi phí và hạn mức (UX-35, UX-36)
 

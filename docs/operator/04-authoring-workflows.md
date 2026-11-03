@@ -369,6 +369,21 @@ aw definition manifest-run --project-id <p> --manifest aw-project.json --mode CH
 (`AW_PYTHON` picks the interpreter for the CLI; `aw-state.json` is read and written next to the manifest, as when you run
 the script there.)
 
+## Creating the tasks of a feature design (V12-22)
+
+After the DESIGN gate of `wf-feature-definition` approves `docs/features/<slug>/tasks.json`, the task page's
+**Tasks from tasks.json** creates its tasks as child tasks of that work item, replacing `split-tasks.sh` + `run-task.sh`:
+
+1. enter the feature folder (`<slug>`) and **Read tasks.json** — it is read from the recorded revision of the family's
+   repositories (or paste it, when the design is not committed yet); entries with a missing field are listed and skipped;
+2. check the preview: each task's repository and directories (its `pathScopes` plus `docs`; the other repositories are
+   read-only), the number of acceptance criteria, its lane, and the workflow — suggested by its risk (LOW → task delivery,
+   MEDIUM/HIGH → the plus variant), changeable per task;
+3. **Create**: the tasks are created in file order with exactly the title, scope and contract `split-tasks.sh` writes, made
+   READY, and — with *Queue them in this order* — put in the family queue so they run one after another. A task that fails
+   to create stops the rest (order matters); creating again reuses the same idempotency keys, so tasks already created are
+   not duplicated.
+
 ## Queueing tasks of a family (V12-19)
 
 A family shares one worktree, so its tasks run one after another. Instead of starting each one when the one before is done,
