@@ -383,6 +383,22 @@ export function doctor(opts: RequestOptions = {}): Promise<DoctorResponse> {
   return request<DoctorResponse>("GET", "/doctor", undefined, opts);
 }
 
+export interface ExportAwDocumentsRequest {
+  overwrite?: boolean;
+}
+
+export interface ExportAwDocumentsResponse {
+  repositoryWorkspaceId: string;
+  exported: string[];
+  unchanged: string[];
+  conflicts: string[];
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents/export (scope: PROJECT)
+export function exportAwDocuments(projectId: string, repositoryWorkspaceId: string, body: ExportAwDocumentsRequest, opts: RequestOptions = {}): Promise<ExportAwDocumentsResponse> {
+  return request<ExportAwDocumentsResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/aw-documents/export`, body, opts);
+}
+
 export interface GetAdapterBuildResponse {
   id: string;
   providerKey: string;
@@ -639,6 +655,18 @@ export interface GetProjectDefinitionVersionResponse {
 // GET /projects/{projectId}/definitions/versions/{versionId} (scope: PROJECT)
 export function getProjectDefinitionVersion(projectId: string, versionId: string, opts: RequestOptions = {}): Promise<GetProjectDefinitionVersionResponse> {
   return request<GetProjectDefinitionVersionResponse>("GET", `/projects/${projectId}/definitions/versions/${versionId}`, undefined, opts);
+}
+
+export interface GetProjectTaskDocumentsResponse {
+  projectId: string;
+  location: string;
+  directoryPattern: string;
+  version?: number;
+}
+
+// GET /projects/{id}/task-documents (scope: PROJECT)
+export function getProjectTaskDocuments(id: string, opts: RequestOptions = {}): Promise<GetProjectTaskDocumentsResponse> {
+  return request<GetProjectTaskDocumentsResponse>("GET", `/projects/${id}/task-documents`, undefined, opts);
 }
 
 export interface GetProjectionRebuildOperationStatusResponse {
@@ -1104,6 +1132,16 @@ export interface ListAttemptEventsResponse {
 // GET /execution-attempts/{attemptId}/events (scope: PROJECT)
 export function listAttemptEvents(attemptId: string, opts: RequestOptions = {}): Promise<ListAttemptEventsResponse> {
   return request<ListAttemptEventsResponse>("GET", `/execution-attempts/${attemptId}/events`, undefined, opts);
+}
+
+export interface ListAwDocumentsResponse {
+  repositoryWorkspaceId: string;
+  documents: unknown[];
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents (scope: PROJECT)
+export function listAwDocuments(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<ListAwDocumentsResponse> {
+  return request<ListAwDocumentsResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/aw-documents`, undefined, opts);
 }
 
 export interface ListChildWorkItemsResponse {
@@ -1863,6 +1901,22 @@ export interface SetProjectCommitTemplateResponse {
 // POST /projects/{id}/commit-template (scope: PROJECT)
 export function setProjectCommitTemplate(id: string, body: SetProjectCommitTemplateRequest, opts: RequestOptions = {}): Promise<SetProjectCommitTemplateResponse> {
   return request<SetProjectCommitTemplateResponse>("POST", `/projects/${id}/commit-template`, body, opts);
+}
+
+export interface SetProjectTaskDocumentsRequest {
+  location: string;
+}
+
+export interface SetProjectTaskDocumentsResponse {
+  projectId: string;
+  location: string;
+  directoryPattern: string;
+  version?: number;
+}
+
+// POST /projects/{id}/task-documents (scope: PROJECT)
+export function setProjectTaskDocuments(id: string, body: SetProjectTaskDocumentsRequest, opts: RequestOptions = {}): Promise<SetProjectTaskDocumentsResponse> {
+  return request<SetProjectTaskDocumentsResponse>("POST", `/projects/${id}/task-documents`, body, opts);
 }
 
 export interface SetRepositorySecretsRequest {

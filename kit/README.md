@@ -127,6 +127,10 @@ flowchart LR
   G2 -->|rejected| X
 ```
 
+`taskDocuments` (V12-33, ADR-065) trong `aw-project.json`: `"repo"` (mặc định) ghi `frame.md`, `plan.md` vào
+`docs/features/<feature>/tasks/<task>/` của repo; `"aw"` ghi vào `.aw/features/<feature>/tasks/<task>/` của worktree (git bỏ qua, xem và
+**Export to repo** trên tab Workspace). `02-spec.md`, `03-design.md`, `tasks.json` luôn ở trong repo.
+
 `wf-qa` (V12-31) là một cổng duyệt có **checklist QA** (hoàn thành theo `policy-completion-qa`: một người đã quyết định): mỗi tiêu chí chấp nhận của task là một mục, người QA đánh đạt/không đạt
 (ghi chú bắt buộc khi không đạt, đính ảnh), outcome đi theo các mục; mục không đạt có nút **Create fix task**. `wf-bugfix-ui` dành cho
 UI chưa có bộ test: agent `repro` viết script trình duyệt `.aw-qa/*.mjs` (Playwright, không thêm vào `package.json`), `ui-expect-fail`

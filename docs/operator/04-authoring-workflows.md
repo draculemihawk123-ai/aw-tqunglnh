@@ -763,3 +763,30 @@ those steps' output. Requirements, not added to the project:
   `ui-expect-fail`.
 - The scripts stay **out of the repository** (`.aw-qa/` is added to `.git/info/exclude`) and are kept by aw in those steps' output; a
   project that wants them committed sets `AW_QA_SCRIPTS_IN_REPO=1` for the worker (only `.aw-qa/out/` stays excluded).
+
+## Where a task's frame.md and plan.md live (`taskDocuments`, V12-33, ADR-065)
+
+The kit's FRAME and PLAN stages write `frame.md` and `plan.md` for every task. A project chooses where:
+
+- **REPO** (the default, as in V10): `docs/features/<feature>/tasks/<task>/` in the repository, committed with the task.
+- **AW**: `.aw/features/<feature>/tasks/<task>/` in the worktree. aw lists `/.aw/` in the repository's `.git/info/exclude` when it
+  creates a worktree (or the first time a process starts in an older one), so git ignores the directory: it is never committed, never
+  a scope violation, and nothing else of the worktree changes. The Workspace tab lists the files (**Task documents in aw**) and shows
+  them; `check-plan` prints the plan into its own output, which aw keeps with the step's evidence.
+
+The feature's lasting documents — `02-spec.md`, `03-design.md`, `tasks.json` — **always stay in the repository**.
+
+```bash
+aw project set-task-documents --location aw <projectId>     # or: repo
+aw project task-documents <projectId>
+```
+
+or **Task documents** on the project page, or `"taskDocuments": "aw"` in `aw-project.json` (`aw-publish.py` sets it). The choice is
+written into each task's contract when the task is created (`split-tasks.sh`, *Create tasks* from `tasks.json`): a task keeps the
+directory it was created with.
+
+Keeping the documents: **Export to repo** on the Workspace tab (`aw repository-workspace aw-documents export --project-id <p>
+<repositoryWorkspaceId>`) copies `.aw/features/<rest>` to `docs/features/<rest>` in the worktree, uncommitted, for the normal commit.
+It needs the worktree `READY` and no attempt writing; a document that already exists there with other content stops the whole export
+(nothing is written) until you confirm **Overwrite** (`--overwrite`). Releasing a worktree removes its `.aw/` with it: export first
+what you want to keep.

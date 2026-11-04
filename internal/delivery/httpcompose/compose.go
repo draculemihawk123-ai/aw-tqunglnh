@@ -52,6 +52,7 @@ import (
 	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
+	httpawdocs "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/awdocuments"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
@@ -271,6 +272,8 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	httpapi.RegisterForgeRoutes(routes, deps.UnitOfWork, deps.WorkspaceHeadAuditor, deps.ForgeClient) // V12-28
 	httpsecrets.RegisterRoutes(routes, deps.UnitOfWork, deps.SecretKeys)                              // V12-29
 	httprunapp.RegisterRoutes(routes, deps.UnitOfWork, deps.RunAppHost)                               // V12-30
+	awDocumentStore, _ := deps.WorkspaceHeadAuditor.(ports.AwDocumentStore)
+	httpawdocs.RegisterRoutes(routes, deps.UnitOfWork, awDocumentStore) // V12-33
 	// V6-10D: bounded source/diff/repository-log inspection routes, backed
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})

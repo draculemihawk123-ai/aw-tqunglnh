@@ -697,6 +697,20 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
 - Các node của kit ghi `frame.md`, `plan.md` vào `docs/features/<feature>/tasks/<task>/` của repo sản phẩm, mỗi task thêm một
   thư mục. Product owner quyết định có cho chọn lưu chỉ trong artifact của aw (xem được trên giao diện) hay không; đây là thiết
   kế của V10.
+- **Kết quả (đã xong, ADR-065):** cài đặt theo project `task_documents` (REPO mặc định, AW), route `getProjectTaskDocuments` /
+  `setProjectTaskDocuments`, CLI `aw project task-documents|set-task-documents`, khung **Task documents** trên trang project;
+  `aw-project.json` có `taskDocuments` (`aw-publish.py` đặt). Với AW, tài liệu của task nằm ở `.aw/features/<feature>/tasks/<task>/`
+  trong worktree: `gitworktree` ghi `/.aw/` vào `info/exclude` khi tạo worktree (và lần đầu một tiến trình chạy trong worktree cũ),
+  nên git bỏ qua, không commit, không tính vi phạm scope. `split-tasks.sh` và *Create tasks* ghi thư mục đó vào contract của task;
+  skill `flow.working-rules`, `flow.frame`, `flow.plan` đọc thư mục của task từ contract (kit 1.11.0); `check-plan.sh` kiểm plan mới nhất
+  trong `.aw/` và in nội dung vào output (aw giữ cùng evidence của bước). Route `listAwDocuments` / `exportAwDocuments`, CLI
+  `aw repository-workspace aw-documents list|export`; tab Workspace có **Task documents in aw** (xem từng file, **Export to repo** chép
+  sang `docs/features/…` chưa commit, trùng khác nội dung thì dừng cả lần chép cho tới khi chọn **Overwrite**; cần READY, không có write
+  lease). `02-spec.md`, `03-design.md`, `tasks.json` vẫn luôn ở repo. Docs: operator 03/04, kit README. Test: `awdocuments_sqlite_test.go`
+  (SQLite và worktree thật: git bỏ qua `.aw/`, xuất, trùng, ghi đè, replay, write lease), `task_documents_sqlite_test.go`,
+  `AwDocumentsPanel.test.tsx`, `check-plan.sh` chạy tay với plan trong `.aw/`. Khác với chữ của ADR-065 mục 2: tài liệu không nằm ở
+  "thư mục tạm của attempt" mà ở `.aw/` của worktree (agent ghi được trong cwd của nó, mọi node sau đọc được); bản lưu trong aw là
+  output của `check-plan` cùng evidence, còn file trong `.aw/` mất khi release worktree — vì vậy có Export to repo.
 
 ---
 

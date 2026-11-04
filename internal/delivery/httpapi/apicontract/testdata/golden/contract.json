@@ -892,6 +892,47 @@
       }
     },
     {
+      "operationId": "exportAwDocuments",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents/export",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "awdocuments.ExportRequest",
+        "fields": [
+          {
+            "name": "Overwrite",
+            "jsonTag": "overwrite,omitempty",
+            "type": "bool"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "awdocuments.ExportResult",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "Exported",
+            "jsonTag": "exported",
+            "type": "[]string"
+          },
+          {
+            "name": "Unchanged",
+            "jsonTag": "unchanged",
+            "type": "[]string"
+          },
+          {
+            "name": "Conflicts",
+            "jsonTag": "conflicts",
+            "type": "[]string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getAdapterBuild",
       "method": "GET",
       "path": "/adapter-builds/{id}",
@@ -1830,6 +1871,41 @@
             "name": "Warnings",
             "jsonTag": "warnings,omitempty",
             "type": "[]string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getProjectTaskDocuments",
+      "method": "GET",
+      "path": "/projects/{id}/task-documents",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "catalog.TaskDocumentsView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Location",
+            "jsonTag": "location",
+            "type": "string"
+          },
+          {
+            "name": "DirectoryPattern",
+            "jsonTag": "directoryPattern",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
           }
         ]
       }
@@ -3472,6 +3548,31 @@
             "name": "HasMore",
             "jsonTag": "hasMore",
             "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listAwDocuments",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "awdocuments.List",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "Documents",
+            "jsonTag": "documents",
+            "type": "[]ports.AwDocument"
           }
         ]
       }
@@ -5658,6 +5759,47 @@
           {
             "name": "Default",
             "jsonTag": "default",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setProjectTaskDocuments",
+      "method": "POST",
+      "path": "/projects/{id}/task-documents",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.taskDocumentsRequestBody",
+        "fields": [
+          {
+            "name": "Location",
+            "jsonTag": "location",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "catalog.TaskDocumentsView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Location",
+            "jsonTag": "location",
+            "type": "string"
+          },
+          {
+            "name": "DirectoryPattern",
+            "jsonTag": "directoryPattern",
             "type": "string"
           },
           {

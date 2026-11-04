@@ -131,6 +131,13 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectSetCommitTemplate(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "set-commit-template"),
+		// V12-33 (ADR-065): where the kit's per-task documents live.
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectTaskDocuments(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "task-documents"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectSetTaskDocuments(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "set-task-documents"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectArchive(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "archive"),
@@ -559,6 +566,13 @@ func workspaceRoutes() []Route {
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceRemote(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "remote"),
+		// V12-33 (ADR-065)
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceAwDocumentsList(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "aw-documents", "list"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceAwDocumentsExport(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "aw-documents", "export"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspacePush(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "push"),

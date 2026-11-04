@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
-import { createChildWorkItem, getWorkspaceSetState, listProjectDefinitionVersions, listProjectDefinitions, markWorkItemReady, setWorkItemQueue } from '../api/generated';
+import { createChildWorkItem, getProjectTaskDocuments, getWorkspaceSetState, listProjectDefinitionVersions, listProjectDefinitions, markWorkItemReady, setWorkItemQueue } from '../api/generated';
 import { withSessionToken } from '../api/session';
 import { fetchWorkspaceSource } from '../api/workspaceinspection';
 import type { WorkspaceSetState } from '../api/workspaceinspection';
@@ -34,6 +34,12 @@ export function CreateTasksDialog({ projectId, parentWorkItemId, familyId, isOff
   const [busy, setBusy] = useState(false);
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
 
+  // V12-33 (ADR-065): where each task's frame.md and plan.md go.
+  const taskDocumentsQuery = useQuery({
+    queryKey: ['projectTaskDocuments', projectId],
+    queryFn: async () => (await getProjectTaskDocuments(projectId, withSessionToken())) as unknown as { location: string },
+    enabled: !isOffline,
+  });
   const setQuery = useQuery({
     queryKey: ['workspaceSetState', projectId, familyId],
     queryFn: async () => (await getWorkspaceSetState(projectId, familyId!, withSessionToken())) as unknown as WorkspaceSetState,
@@ -88,7 +94,8 @@ export function CreateTasksDialog({ projectId, parentWorkItemId, familyId, isOff
     setBusy(true);
     const selected = rows.filter(r => r.include);
     const done: Outcome[] = [];
-    const ctx = { slug: slug.trim(), docsRepository: docsRepository || repos[0]?.repositoryId || '', repositories: (setQuery.data?.repositoryWorkspaces ?? []).map(r => r.repositoryId) };
+    const ctx = { slug: slug.trim(), docsRepository: docsRepository || repos[0]?.repositoryId || '', repositories: (setQuery.data?.repositoryWorkspaces ?? []).map(r => r.repositoryId),
+      taskDocuments: taskDocumentsQuery.data?.location };
     for (const row of selected) {
       try {
         const created = await createChildWorkItem(projectId, parentWorkItemId,

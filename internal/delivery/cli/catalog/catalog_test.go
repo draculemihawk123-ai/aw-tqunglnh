@@ -202,6 +202,8 @@ func TestDescriptorsRegisterEveryCommandWithConsistentMetadata(t *testing.T) {
 		"project restore":                       {"PROJECT", "projectsRestore"},
 		"project commit-template":               {"PROJECT", "getProjectCommitTemplate"},
 		"project set-commit-template":           {"PROJECT", "setProjectCommitTemplate"},
+		"project task-documents":                {"PROJECT", "getProjectTaskDocuments"},
+		"project set-task-documents":            {"PROJECT", "setProjectTaskDocuments"},
 		"repository secret list":                {"PROJECT", "listRepositorySecrets"},
 		"repository secret set":                 {"PROJECT", "setRepositorySecrets"},
 		"repository secret delete":              {"PROJECT", "deleteRepositorySecret"},

@@ -76,6 +76,7 @@ var noCrossProjectProof = []string{
 	"getApprovalRelease",
 	"getAttemptPrompt",         // V12-26: ReadAttemptPrompt refuses another project's attempt itself (not found)
 	"getProjectCommitTemplate", // V12-25: a project setting (key/value), read in the project's own scope
+	"getProjectTaskDocuments",  // V12-33: as getProjectCommitTemplate
 	"getProjectCosts",          // V12-23: a read of the whole project (as listNeedsYou)
 	"getDefinitionManifest",    // V12-21: the project id selects operator configuration, not a stored entity
 	"getProjectDefinition",
@@ -128,6 +129,7 @@ var noCrossProjectProof = []string{
 	"startWorkflowRun",
 	"submitWaitSignal",
 	"setProjectCommitTemplate", // V12-25: as getProjectCommitTemplate
+	"setProjectTaskDocuments",  // V12-33: as getProjectCommitTemplate
 	"setRepositorySecrets",     // V12-29: as deleteRepositorySecret
 	"getRunAppProfile",         // V12-30: runapp checks the repository belongs to the project (hidden otherwise)
 	"setRunAppProfile",         // V12-30: as getRunAppProfile

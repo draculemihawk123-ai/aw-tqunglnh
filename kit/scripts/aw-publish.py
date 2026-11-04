@@ -114,6 +114,8 @@ def load_manifest(path, as_kit=False, kit_override=None):
     manifest["provider"].setdefault("configIdentity", manifest["prefix"] + "claude")
     manifest["provider"].setdefault("envAllowlist", [])
     manifest.setdefault("messageBudget", None)
+    if manifest.get("taskDocuments", "repo") not in ("repo", "aw"):
+        raise ManifestError('"taskDocuments" là "repo" hoặc "aw"')
     manifest.setdefault("role", "kit" if as_kit else "project")
     manifest["_kit"] = None
     spec = manifest.pop("kit", None)
@@ -762,6 +764,13 @@ class Publisher:
             document = self.resolve_refs(workflow_template(m, workflow))
             self.validate_workflow(workflow["id"], workflow.get("name"), document)
             self.publish("WORKFLOW", workflow["id"], workflow.get("name"), document, project=True)
+
+        if m["role"] == "project" and "taskDocuments" in m:
+            # V12-33 (ADR-065): nơi ghi frame.md, plan.md của task; split-tasks.sh và giao diện đọc lại từ aw.
+            location = m["taskDocuments"]
+            self.aw.run(["project", "set-task-documents", "--location", location,
+                         "--idempotency-key", f"task-documents-{location}", self.state["projectId"]])
+            print(f"== Tài liệu của task: {location}")
 
         print("== Gán Engineering Pack cho component")
         components = self.aw.json(["component", "list", self.state["projectId"]])["components"]

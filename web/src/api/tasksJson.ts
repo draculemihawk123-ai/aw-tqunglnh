@@ -74,6 +74,8 @@ export interface SplitContext {
   /** Every repository of the family. */
   repositories: string[];
   workflowVersionId: string;
+  /** V12-33 (ADR-065): where the task's frame.md and plan.md go — REPO (docs/features, the default) or AW (.aw/features, kept out of git). */
+  taskDocuments?: 'REPO' | 'AW' | string;
 }
 
 /** The createChildWorkItem body for one task — split-tasks.sh's jq program, field for field. */
@@ -81,8 +83,12 @@ export function childRequestForTask(task: TaskSpec, ctx: SplitContext): { title:
   const target = task.repository ?? ctx.docsRepository;
   const pathScopes = [...new Set([...task.pathScopes, 'docs'])].sort();
   const others = ctx.repositories.filter(r => r !== target);
+  const docsRoot = ctx.taskDocuments === 'AW' ? '.aw/features' : 'docs/features';
+  const inAw = docsRoot !== 'docs/features'
+    ? ` Thư mục tài liệu của task (frame.md, plan.md): ${docsRoot}/${ctx.slug}/tasks/${task.id}/ (chỉ trong aw, git bỏ qua, không commit).`
+    : '';
   const crossRepo = target !== ctx.docsRepository
-    ? ` Tài liệu tính năng nằm ở repository ${ctx.docsRepository} (chỉ đọc); file frame.md, plan.md của task này ghi vào docs/features/${ctx.slug}/tasks/${task.id}/ trong repository ${target}.`
+    ? ` Tài liệu tính năng nằm ở repository ${ctx.docsRepository} (chỉ đọc); file frame.md, plan.md của task này ghi vào ${docsRoot}/${ctx.slug}/tasks/${task.id}/ trong repository ${target}.`
     : '';
   return {
     title: `${task.id}: ${task.title}`,
@@ -93,7 +99,7 @@ export function childRequestForTask(task: TaskSpec, ctx: SplitContext): { title:
     ],
     contract: {
       schemaVersion: 1,
-      behavior: `Thư mục tài liệu: docs/features/${ctx.slug} (02-spec.md, 03-design.md, tasks.json). Task ${task.id}, lane đề xuất: ${task.lane ?? ''}. ${task.behavior}${crossRepo}`,
+      behavior: `Thư mục tài liệu: docs/features/${ctx.slug} (02-spec.md, 03-design.md, tasks.json). Task ${task.id}, lane đề xuất: ${task.lane ?? ''}. ${task.behavior}${inAw}${crossRepo}`,
       verificationSpec: 'GATE 1 (build + test của phần code bị đổi) và bước kiểm tra tĩnh đều thoát mã 0 với evidence COMMAND_EXECUTION; GATE 2: người vận hành duyệt diff.',
       riskLevel: task.riskLevel,
       acceptanceCriteria: task.acceptanceCriteria.map(description => ({ description, verificationRef: 'COMMAND_EXECUTION' })),

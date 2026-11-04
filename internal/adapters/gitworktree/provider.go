@@ -165,6 +165,10 @@ func (p *Provider) Provision(ctx context.Context, spec ports.ProvisionSpec) (por
 		_, _ = p.runGit(context.Background(), repositoryPath, "worktree", "remove", workspacePath)
 		return ports.WorkspaceHandle{}, fmt.Errorf("persist workspace metadata: %w", err)
 	}
+	// V12-33 (ADR-065): the aw-private directory is ignored by git before any agent writes in the worktree.
+	if err := p.ensureAwPrivateExcluded(ctx, workspacePath); err != nil {
+		return ports.WorkspaceHandle{}, fmt.Errorf("exclude %s from git: %w", ports.AwPrivateDirectory, err)
+	}
 	if _, err := p.inspectActive(ctx, handle, metadata); err != nil {
 		return ports.WorkspaceHandle{}, err
 	}
@@ -201,7 +205,13 @@ func (p *Provider) WorkingDirectory(ctx context.Context, handle ports.WorkspaceH
 	if _, err := p.Inspect(ctx, handle); err != nil {
 		return "", err
 	}
-	return p.workspacePath(handle)
+	dir, err := p.workspacePath(handle)
+	if err != nil {
+		return "", err
+	}
+	// V12-33: a worktree provisioned before ADR-065 gets the exclusion the first time a process starts in it (best effort).
+	_ = p.ensureAwPrivateExcluded(ctx, dir)
+	return dir, nil
 }
 
 func (p *Provider) CaptureRevision(ctx context.Context, handle ports.WorkspaceHandle) (workspace.Revision, error) {

@@ -338,6 +338,8 @@ chỉ icon) để phân biệt `CancelRun` / `CancelWorkItem` / `ResolveWorkItem
 | 22 | command | Đặt hoặc bỏ trần ngân sách của một đợt (WorkItem gốc); vượt thì hàng đợi dừng | `setWorkItemBudget` | `aw work-item budget` | `SetWorkItemBudget` [ĐÃ CÓ: `internal/app/runtime/costs.go:SetWorkItemBudget`] | V12-23 |
 | 23 | query | Mẫu commit message của project (mặc định `{title}`) | `getProjectCommitTemplate` | `aw project commit-template` | `GetProjectCommitTemplate` [ĐÃ CÓ: `internal/app/catalog/commit_template.go:GetCommitTemplate`] | V12-25 |
 | 24 | command | Đặt hoặc bỏ mẫu commit message (`{title}`, `{taskId}`, `{workItemId}`); marker luôn là trailer cuối thân commit | `setProjectCommitTemplate` | `aw project set-commit-template` | `SetProjectCommitTemplate` [ĐÃ CÓ: `internal/app/catalog/commit_template.go:SetCommitTemplate`] | V12-25 |
+| 25 | query | Nơi lưu tài liệu của task (REPO hoặc AW) | `getProjectTaskDocuments` | `aw project task-documents` | `GetProjectTaskDocuments` [ĐÃ CÓ: `internal/app/catalog/task_documents.go:GetTaskDocuments`] | V12-33 |
+| 26 | command | Chọn nơi lưu tài liệu của task (mặc định REPO) | `setProjectTaskDocuments` | `aw project set-task-documents` | `SetProjectTaskDocuments` [ĐÃ CÓ: `internal/app/catalog/task_documents.go:SetTaskDocuments`] | V12-33 |
 
 ## 9. Screen 8 — Run graph & timeline (+ diagnostics/recovery)
 
@@ -433,6 +435,8 @@ màu (không chỉ màu); danh sách log điều hướng và phân trang đư�
 | 19 | query | Trạng thái ứng dụng của worktree, log từng tiến trình (đã che secret), lý do chưa Start được | `getRunAppStatus` | `aw repository-workspace run-app status` | `GetRunAppStatus` [ĐÃ CÓ: `internal/app/runapp/runapp.go:GetStatus`] | V12-30 |
 | 20 | command | Start ứng dụng (worker chạy; một phiên mỗi repository; từ chối khi có write lease) | `startRunApp` | `aw repository-workspace run-app start` | `StartRunApp` [ĐÃ CÓ: `internal/app/runapp/runapp.go:Start`] — worker kiểm cổng trống, giải secret | V12-30 |
 | 21 | command | Stop ứng dụng (giết cả cây tiến trình) | `stopRunApp` | `aw repository-workspace run-app stop` | `StopRunApp` [ĐÃ CÓ: `internal/app/runapp/runapp.go:Stop`] | V12-30 |
+| 22 | query | Tài liệu của task giữ trong aw (`.aw/features/…`, git bỏ qua) của worktree | `listAwDocuments` | `aw repository-workspace aw-documents list` | `ListAwDocuments` [ĐÃ CÓ: `internal/app/awdocuments/awdocuments.go:ListDocuments`] | V12-33 |
+| 23 | command | Export to repo: chép tài liệu sang `docs/features/…` (chưa commit; trùng khác nội dung thì từ chối trừ khi ghi đè) | `exportAwDocuments` | `aw repository-workspace aw-documents export` | `ExportAwDocuments` [ĐÃ CÓ: `internal/app/awdocuments/awdocuments.go:Export`] — cần READY, không có write lease | V12-33 |
 
 ## 11. Screen 10 — ReleaseSet & local commit
 

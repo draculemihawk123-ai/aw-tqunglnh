@@ -16,12 +16,15 @@ project_id=$(jq -er '.projectId' "$AW_STATE")
 family=$(jq -er '.root.familyId' "$AW_STATE")
 all_repos=$("${AW:-aw}" workspace-set show --project-id "$project_id" "$family" | jq -c '[.repositoryWorkspaces[].repositoryId]')
 worktree=$(AW_STATE="$AW_STATE" "$(dirname "$0")/worktree-path.sh")
+# V12-33 (ADR-065): frame.md, plan.md của task ghi vào repo (REPO, mặc định) hay vào .aw/ của worktree (AW, git bỏ qua).
+location=$("${AW:-aw}" project task-documents "$project_id" 2>/dev/null | jq -r '.location // "REPO"' || echo REPO)
+if [ "$location" = AW ]; then docs_root=.aw/features; else docs_root=docs/features; fi
 tasks="$worktree/docs/features/$slug/tasks.json"
 [ -s "$tasks" ] || { echo "không thấy $tasks" >&2; exit 1; }
 mkdir -p "$out"
 jq -c '.[]' "$tasks" | tr -d '\r' | while read -r task; do   # jq.exe trên Windows in CRLF
   id=$(jq -r '.id' <<<"$task")
-  jq -n --argjson t "$task" --arg slug "$slug" --arg repo "$repo" --argjson all "$all_repos" '($t.repository // $repo) as $target | {
+  jq -n --argjson t "$task" --arg slug "$slug" --arg repo "$repo" --argjson all "$all_repos" --arg docs_root "$docs_root" '($t.repository // $repo) as $target | {
     title: "\($t.id): \($t.title)",
     parentJoinPolicy: "ALL_CHILDREN_DONE",
     effectiveScope: ([{repositoryId: $target, access: "WRITE", reason: "Task \($t.id) của tính năng \($slug)",
@@ -30,7 +33,8 @@ jq -c '.[]' "$tasks" | tr -d '\r' | while read -r task; do   # jq.exe trên Wind
     contract: {
       schemaVersion: 1,
       behavior: ("Thư mục tài liệu: docs/features/\($slug) (02-spec.md, 03-design.md, tasks.json). Task \($t.id), lane đề xuất: \($t.lane). \($t.behavior)"
-                 + (if $target != $repo then " Tài liệu tính năng nằm ở repository \($repo) (chỉ đọc); file frame.md, plan.md của task này ghi vào docs/features/\($slug)/tasks/\($t.id)/ trong repository \($target)." else "" end)),
+                 + (if $docs_root != "docs/features" then " Thư mục tài liệu của task (frame.md, plan.md): \($docs_root)/\($slug)/tasks/\($t.id)/ (chỉ trong aw, git bỏ qua, không commit)." else "" end)
+                 + (if $target != $repo then " Tài liệu tính năng nằm ở repository \($repo) (chỉ đọc); file frame.md, plan.md của task này ghi vào \($docs_root)/\($slug)/tasks/\($t.id)/ trong repository \($target)." else "" end)),
       verificationSpec: "GATE 1 (build + test của phần code bị đổi) và bước kiểm tra tĩnh đều thoát mã 0 với evidence COMMAND_EXECUTION; GATE 2: người vận hành duyệt diff.",
       riskLevel: $t.riskLevel,
       acceptanceCriteria: [$t.acceptanceCriteria[] | {description: ., verificationRef: "COMMAND_EXECUTION"}],
