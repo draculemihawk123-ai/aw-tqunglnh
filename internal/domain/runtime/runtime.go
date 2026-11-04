@@ -263,10 +263,13 @@ type ExecutionAttempt struct {
 	// RecordAttemptInputTrees, a CAS on NULL) by the executor, and copied
 	// verbatim onto the NEXT attempt of the same NodeRun by whoever creates
 	// it (technical retry, crash recovery) — see InheritedInputTrees.
-	InputTrees        map[project.RepositoryID]string
-	LastCheckpointID  *CheckpointID
-	StartedAt         *time.Time
-	FinishedAt        *time.Time
+	InputTrees       map[project.RepositoryID]string
+	LastCheckpointID *CheckpointID
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
+	// CreatedAt is when the attempt row was created (scheduled). Display only: the run timeline shows it as the start when
+	// StartedAt is unset; StartedAt keeps its meaning (nil = no executor was ever spawned).
+	CreatedAt         time.Time
 	TerminationReason TerminationReason
 	// FailureCode is populated now (V4-06) for a terminal FAILED or
 	// TIMED_OUT attempt: the exact errorcode.Code (go-core-spec §18) this

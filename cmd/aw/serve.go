@@ -156,7 +156,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	flags.Var(&projectManifests, "project-manifest", "<projectId>=<path to aw-project.json>: the UI's Project definitions page runs the kit's aw-publish.py on it (repeatable; omitted = the page shows the command to run instead)")
 	// V12-28 (ADR-060): the GitHub CLI that pushes, opens and merges pull requests with the machine's own sign-in.
 	ghExecutable := flags.String("gh", "gh", "GitHub CLI used for pull requests (signed in with `gh auth login`; aw keeps no token)")
-	pythonExecutable := flags.String("python", "python3", "Python interpreter that runs the kit's aw-publish.py for --project-manifest")
+	pythonExecutable := flags.String("python", "", "Python interpreter that runs the kit's aw-publish.py for --project-manifest (empty = python on Windows, where python3 is usually the Microsoft Store alias, python3 elsewhere)")
 	uiDist := flags.String("ui-dist", "", "directory containing a built V7 UI (`pnpm build` output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}

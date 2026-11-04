@@ -30,11 +30,20 @@ print("cwd:", os.getcwd())
 sys.exit(3 if "--check" not in sys.argv and os.path.exists("fail") else 0)
 `
 
-func TestRunner_RunsTheKitPublisherOnTheConfiguredManifest(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not installed")
+// workingPython finds an interpreter that actually runs: on Windows `python3` is often the Microsoft Store alias, which exits 9009.
+func workingPython(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{DefaultPython(), "python3", "python"} {
+		if p, err := exec.LookPath(name); err == nil && exec.Command(p, "-c", "import sys").Run() == nil {
+			return p
+		}
 	}
+	t.Skip("no working Python interpreter")
+	return ""
+}
+
+func TestRunner_RunsTheKitPublisherOnTheConfiguredManifest(t *testing.T) {
+	python := workingPython(t)
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "kit", "kit.json"), `{}`)
 	writeFile(t, filepath.Join(root, "kit", "scripts", "aw-publish.py"), fakePublisher)

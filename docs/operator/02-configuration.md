@@ -53,7 +53,7 @@ Usage of serve:
   -project-manifest value
         <projectId>=<path to aw-project.json>: the UI's Project definitions page runs the kit's aw-publish.py on it (repeatable; omitted = the page shows the command to run instead)
   -python string
-        Python interpreter that runs the kit's aw-publish.py for --project-manifest (default "python3")
+        Python interpreter that runs the kit's aw-publish.py for --project-manifest (empty = python on Windows, where python3 is usually the Microsoft Store alias, python3 elsewhere)
   -ui-dist pnpm build
         directory containing a built V7 UI (pnpm build output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7
   -warn-hard-constraints int

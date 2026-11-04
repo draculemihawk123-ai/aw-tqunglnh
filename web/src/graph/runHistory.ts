@@ -78,17 +78,21 @@ function historyRow(run: RunInput, a: NodeActivationView, attempts: TimelineEntr
   let started: string | undefined;
   let finished: string | undefined;
   let duration = 0;
+  let timed = 0;
   let cost: number | undefined;
   for (const at of attempts) {
     if (at.startedAt && (!started || at.startedAt < started)) started = at.startedAt;
     if (at.finishedAt && (!finished || at.finishedAt > finished)) finished = at.finishedAt;
-    if (at.startedAt && at.finishedAt) duration += Date.parse(at.finishedAt) - Date.parse(at.startedAt);
+    if (at.startedAt && at.finishedAt) {
+      duration += Date.parse(at.finishedAt) - Date.parse(at.startedAt);
+      timed++;
+    }
     if (at.usage?.costUsd !== undefined) cost = (cost ?? 0) + at.usage.costUsd;
   }
   return {
     runId: run.runId, runNumber: run.runNumber, nodeRunId: a.nodeRunId, nodeKey: a.nodeKey,
     activationSequence: a.activationSequence, iteration: a.iteration, state: a.state, outcome: a.selectedOutcome,
-    summary: a.resultSummary, startedAt: started, finishedAt: finished, durationMillis: attempts.length > 0 ? duration : undefined,
+    summary: a.resultSummary, startedAt: started, finishedAt: finished, durationMillis: timed > 0 ? duration : undefined,
     costUsd: cost, attempts: attempts.length, olderVersion,
   };
 }

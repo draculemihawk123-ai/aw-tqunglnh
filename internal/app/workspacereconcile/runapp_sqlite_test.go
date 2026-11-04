@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -277,7 +276,7 @@ func TestRunApp_AWorkerThatStartsAgainEndsWhatADeadWorkerLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 	orphan := exec.Command("sleep", "60")
-	orphan.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	orphan.SysProcAttr = ownProcessGroup()
 	if err := orphan.Start(); err != nil {
 		t.Fatal(err)
 	}

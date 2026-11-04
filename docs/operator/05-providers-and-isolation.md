@@ -125,7 +125,11 @@ aw repository-workspace run-app stop   --project-id <p> <repositoryWorkspaceId>
   seconds, checks every port is free (a port in use ends the session `FAILED: port 8080 (backend) is in use` — stop that program
   first), resolves the secrets from the repository store, then the worker's environment, and starts each process with the worker's
   supervisor (process group on Unix, Job Object on Windows).
-- The executable (`argv[0]`) is looked up in the **worker's** `PATH`, and a process inherits only the worker's `--env-allowlist`
+- A bare executable name (`argv[0]` without a path separator: `pnpm`, `java`) is looked up in the **worker's** `PATH`; a relative
+  path (`./mvnw`, `./mvnw.cmd`, `scripts/dev.sh`) is the worktree file under the process's `dir`, made absolute before it starts.
+  On Windows a `.cmd`/`.bat` script runs through `cmd.exe` on its own, so a Spring backend is
+  `{"argv": ["./mvnw.cmd", "spring-boot:run"], "dir": "backend"}` and a Node frontend `{"argv": ["npm.cmd", "run", "dev"], …}`.
+- A process inherits only the worker's `--env-allowlist`
   variables, plus the profile's variables and secrets. A dev server usually needs `PATH`, `HOME` (and on Windows `SystemRoot`,
   `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`): allow them with `--env-allowlist` (below). On Windows, give the real program
   (`pnpm.cmd`, `mvnw.cmd`) when the name alone is not found.

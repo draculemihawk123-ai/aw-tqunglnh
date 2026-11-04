@@ -316,4 +316,3 @@ func queueSpendingStopTx(ctx context.Context, tx ports.Tx, projectID, familyID s
 	}
 	return "", nil
 }
-

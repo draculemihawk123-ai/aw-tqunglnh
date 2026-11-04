@@ -10,6 +10,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/forge/github"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/kitpublish"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/runapphost"
@@ -47,7 +48,7 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 	deps.NewManifestPublisher = func(manifests map[string]string) (ports.ManifestPublisher, error) {
 		python := os.Getenv("AW_PYTHON")
 		if python == "" {
-			python = "python3"
+			python = kitpublish.DefaultPython()
 		}
 		return buildManifestRunner(manifests, python, opts.DB, opts.ArtifactRoot, opts.WorkspaceRoot, opts.ClaudeExecutable, deps.Matcher)
 	}

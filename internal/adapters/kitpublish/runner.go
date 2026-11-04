@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -48,10 +49,19 @@ type Runner struct {
 
 var _ ports.ManifestPublisher = (*Runner)(nil)
 
+// DefaultPython is the interpreter used when none is configured: `python` on Windows, where `python3` is usually the Microsoft
+// Store alias that only prints an install hint and exits 9009 (a python.org install provides python.exe only), `python3` elsewhere.
+func DefaultPython() string {
+	if runtime.GOOS == "windows" {
+		return "python"
+	}
+	return "python3"
+}
+
 // New returns a runner; manifest paths are made absolute.
 func New(cfg Config) (*Runner, error) {
 	if cfg.Python == "" {
-		cfg.Python = "python3"
+		cfg.Python = DefaultPython()
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 10 * time.Minute

@@ -51,7 +51,8 @@ var (
 type Process struct {
 	// Name identifies the process (its log); letters, digits, - and _.
 	Name string `json:"name"`
-	// Argv is the command, argv[0] the executable (looked up in the worker's PATH). Never a shell string.
+	// Argv is the command, argv[0] the executable: a bare name is looked up in the worker's PATH, a relative path (./mvnw.cmd) is the
+	// file under Dir. Never a shell string.
 	Argv []string `json:"argv"`
 	// Dir is the sub-directory of the worktree it runs in ("" or "." is the worktree root).
 	Dir string `json:"dir,omitempty"`

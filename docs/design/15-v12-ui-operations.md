@@ -742,6 +742,46 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
 
 ---
 
+## Kiểm chứng trên Windows thật (2026-11-04)
+
+Chạy trên máy Windows 10 của product owner: build commit `05b4d25` vào một bản cài riêng (không đụng bản aw đang quản lý
+chochuyennha), (a) `aw serve` trên **bản sao** dữ liệu thật để xem run cũ, (b) `aw up` với dữ liệu mới và một clone riêng của
+chochuyennha-platform (Spring Boot + Next.js) để chạy thật.
+
+**Đạt:**
+- Run graph trên 4 run thật (P2-02, P1-01, P2-01, P0-03): hình dạng, làn quay lại, All paths, bộ đếm số lần chạy thật (P2-02:
+  `gate1 ×4`, `size ×3`, `simplify ×3`; P1-01: `repro ×6` gộp 2 run kể cả lần bị chặn rồi retry), `resultSummary` (`size`: "571 →
+  525 → 522 changed lines, 10 files (threshold 8)").
+- `aw up` (V12-08); kho secret (V12-29): `protection: dpapi`, khóa ở `secret-store.key.dpapi`, mật khẩu không xuất hiện dạng rõ trong
+  bất kỳ file nào (DB, WAL, artifact).
+- Run app (V12-30): backend kết nối RDS bằng secret của kho, log che secret; cổng bận báo `python.exe (pid 21320) holds it`; Stop giết
+  cả cây (mvnw, java, npm, node); `taskkill /F` worker → Job Object giết cả cây, chạy lại worker thì phiên đóng `FAILED: worker
+  aw-worker-… stopped while the application ran`.
+- `ui-check.sh` (V12-31) với Playwright và Chromium thật: expect-fail và expect-pass đúng, script lỗi và script báo lỗi đều bị chặn.
+
+**Lỗi tìm thấy và đã sửa (cùng commit với khối này):**
+- CI `contract (windows-latest)` dừng ở `go vet`: `runapp_sqlite_test.go` dùng `syscall.SysProcAttr{Setpgid}` không có trên Windows →
+  helper theo build tag (`procgroup_unix_test.go`, `procgroup_windows_test.go`). Vì lỗi này, `go test ./...` chưa từng chạy trên
+  Windows CI cho V12.
+- `go test ./...` trên Windows: `TestOpen_ConcurrentOpensOfAFreshDatabaseMigrateOnce` (V12-08) hỏng 17/20 lần (`SQLITE_BUSY` khi
+  chuyển một DB mới sang WAL, SQLite trả BUSY ngay, không qua busy handler) → `busy_timeout` đứng trước `journal_mode(WAL)`, và
+  `Open` thử lại lần ping đầu khi gặp `SQLITE_BUSY` trong giới hạn 10 giây (30/30 lần đạt).
+- `kitpublish`: `python3` trên Windows thường là alias của Microsoft Store (thoát 9009) → mặc định `python` trên Windows
+  (`kitpublish.DefaultPython`, `--python` rỗng, `AW_PYTHON`); test tìm interpreter chạy được thật.
+- `costs.go` thừa dòng trống cuối file (V8-11 `git diff --check`).
+- Run app không chạy được script trong repo trên Windows (`./mvnw.cmd` → cmd.exe báo "'.' is not recognized"; `mvnw.cmd` không có
+  trong PATH) → `argv[0]` dạng đường dẫn tương đối được giải theo `dir` của tiến trình (`resolveExecutable`); tài liệu có ví dụ Windows.
+- Thời lượng mỗi lần chạy luôn "0 ms": `loadExecutionAttemptByID` không đọc `started_at`/`finished_at`, và `started_at` không được
+  ghi cho mọi attempt → loader đọc `started_at`, `finished_at` và `created_at` (trường mới `ExecutionAttempt.CreatedAt`); timeline
+  dùng `created_at` làm giờ bắt đầu khi `started_at` trống. `StartedAt` giữ nghĩa cũ (nil = chưa từng spawn executor, test
+  `TestRuntimeEngineGate_AdapterBuildPinning` dựa vào nó). Giao diện hiện "—" khi không có số liệu.
+- Thời gian trên banner sai cho run thành công (P0-03 hiện "3659m"): `TransitionWorkflowRunState` không ghi `finished_at` khi
+  chuyển sang `SUCCEEDED` → ghi như FAILED/CANCELLED. Run thành công cũ vẫn thiếu `finished_at`; banner lấy giờ kết thúc của
+  attempt cuối thay thế.
+
+**Còn lại:** log của tiến trình chạy qua `npm.cmd` có dòng "Terminate batch job (Y/N)?" khi Stop (chỉ là chữ, cây tiến trình vẫn bị
+giết); V12-28 với một repo GitHub thật chưa chạy.
+
 ## Ngoài phạm vi V12
 
 - V12-32, truy cập từ xa và màn duyệt cho điện thoại: chuyển sang V13 (`16-v13-remote-access.md`), product owner quyết định

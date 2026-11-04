@@ -166,7 +166,7 @@ ORDER BY ea.id`, runID)
 // TransitionWorkflowRunState implements ports.RuntimeRepository (V4-12):
 // the fenced CAS over workflow_runs.state, mirroring transitionNodeRunTx's
 // own exact shape. Sets finished_at when NextState is a genuinely terminal
-// state (FAILED, CANCELLED) — VERIFYING and CANCELLING are deliberately
+// state (SUCCEEDED, FAILED, CANCELLED) — VERIFYING and CANCELLING are deliberately
 // NOT terminal (ADR-011: VERIFYING is only a completion CANDIDATE, still
 // pending V5-11's own CompletionPolicy decision; CANCELLING is ADR-020's
 // own mandatory quiesce phase, not yet CANCELLED), so finished_at stays
@@ -180,7 +180,9 @@ func (r runtimeRepository) TransitionWorkflowRunState(ctx context.Context, req p
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var finishedAt any
-	if req.NextState == runtime.WorkflowRunFailed || req.NextState == runtime.WorkflowRunCancelled {
+	// SUCCEEDED was missing here (V12, found on Windows with real chochuyennha runs): CompletionPolicy's PASS moves a run
+	// VERIFYING -> SUCCEEDED through this function, so every succeeded run kept finished_at NULL and the UI timed it until now.
+	if req.NextState == runtime.WorkflowRunSucceeded || req.NextState == runtime.WorkflowRunFailed || req.NextState == runtime.WorkflowRunCancelled {
 		finishedAt = now
 	}
 	var nextCancelEpoch any

@@ -750,6 +750,11 @@ func attemptToTimelineEntry(nr runtimedomain.NodeRun, a runtimedomain.ExecutionA
 		ProviderKey: a.ProviderKey, StartedAt: a.StartedAt, FinishedAt: a.FinishedAt,
 		TerminationReason: string(a.TerminationReason), FailureCode: string(a.FailureCode),
 	}
+	// started_at is not recorded for every attempt; show when it was created instead so the UI can time it (V12).
+	if entry.StartedAt == nil && !a.CreatedAt.IsZero() {
+		createdAt := a.CreatedAt
+		entry.StartedAt = &createdAt
+	}
 	if a.LastCheckpointID != nil {
 		entry.LastCheckpointID = string(*a.LastCheckpointID)
 	}

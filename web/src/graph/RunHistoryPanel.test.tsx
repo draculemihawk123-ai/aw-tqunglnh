@@ -74,6 +74,14 @@ describe('mergeRunHistory (V12-12)', () => {
     expect(merged.missingFromLatest).toEqual(['legacy-check']);
   });
 
+  it('reports no duration, not 0 ms, when no attempt of an activation has both timestamps', () => {
+    const input = runs();
+    input[0].timeline = [{ ...(input[0].timeline![0] as object), startedAt: undefined } as never];
+    const row = mergeRunHistory(input).rowsByNode.get('build')![0];
+    expect(row.attempts).toBe(1);
+    expect(row.durationMillis).toBeUndefined();
+  });
+
   it('formats durations', () => {
     expect([formatDuration(850), formatDuration(41_000), formatDuration(245_000), formatDuration(undefined)]).toEqual(['850 ms', '41s', '4m 05s', '—']);
   });

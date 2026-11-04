@@ -365,9 +365,10 @@ func (r *Runner) execute(ctx context.Context, s ports.RunAppSession, rs *running
 		}
 		w := newRedactingWriter(logFile, matcher)
 		logs = append(logs, w)
+		workDir := filepath.Join(p.dir, filepath.FromSlash(proc.Dir))
 		spec := ports.ProcessSpec{
-			ID: ports.ProcessID("runapp/" + s.ID + "/" + proc.Name), Executable: proc.Argv[0], Argv: proc.Argv[1:],
-			WorkingDirectory: filepath.Join(p.dir, filepath.FromSlash(proc.Dir)), Environment: envs[i],
+			ID: ports.ProcessID("runapp/" + s.ID + "/" + proc.Name), Executable: resolveExecutable(proc.Argv[0], workDir), Argv: proc.Argv[1:],
+			WorkingDirectory: workDir, Environment: envs[i],
 			InheritedEnvironment: r.d.InheritedEnvironment, Timeout: timeout, GracePeriod: stopGrace, OutputLimitBytes: logLimitBytes,
 			KillWithParent: true,
 		}
@@ -477,4 +478,16 @@ func (r *redactingWriter) Close() error {
 	defer r.mu.Unlock()
 	r.flushLocked()
 	return r.w.Close()
+}
+
+// resolveExecutable turns a relative argv[0] that names a path (./mvnw, ./mvnw.cmd, scripts/dev.sh) into the absolute path of
+// that file under the process's own directory. A bare name (pnpm, java) is left for the worker's PATH lookup, and an absolute
+// path is kept. Starting a relative path as is fails on Windows: a .cmd script is run through cmd.exe, which reads "./mvnw.cmd"
+// as the command "." ("'.' is not recognized"), and a bare "mvnw.cmd" is searched only in PATH (found on Windows with the
+// chochuyennha backend).
+func resolveExecutable(argv0, dir string) string {
+	if filepath.IsAbs(argv0) || !strings.ContainsAny(argv0, `/\`) {
+		return argv0
+	}
+	return filepath.Join(dir, filepath.FromSlash(argv0))
 }
