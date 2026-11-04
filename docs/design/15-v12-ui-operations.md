@@ -3,7 +3,8 @@
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-11-03, nhánh `claude/admiring-brown-d1uf4r`). Phần B (run graph) đã được product
 > owner chốt 7 quyết định ngày 2026-11-03. Tiến độ: xem khối "Kết quả" dưới từng task.
 > Tiến độ tổng: phần A, B, C (V12-01 … V12-27) đã làm, việc còn để lại ghi trong khối "Kết quả" của từng task; phần D
-> (V12-28 … V12-33) có ADR-060 … ADR-065 đã duyệt ngày 2026-11-03, đang làm mã theo thứ tự.
+> (V12-28 … V12-33) có ADR-060 … ADR-065 đã duyệt ngày 2026-11-03, đang làm mã theo thứ tự. V12-32 chuyển sang V13
+> (product owner, 2026-11-04; `16-v13-remote-access.md`).
 > Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Exit: gate V12 ở cuối file.
@@ -83,7 +84,7 @@ Ngoài ra, sau UX-22, mọi commit phải làm bằng git rồi chạy `adopt-he
 | V12-29 | Kho secret theo repository | UX-34 | TB | engine, web, ADR |
 | V12-30 | Chạy ứng dụng (dev server) của worktree để QA tay | UX-32 | TB | engine, web |
 | V12-31 | QA trong aw: WorkItem loại QA; biến thể bugfix cho UI chưa có test | UX-33, UX-43 | TB | kit, engine, web |
-| V12-32 | Truy cập từ xa và màn duyệt cho điện thoại | UX-40 | Thấp | ADR bảo mật |
+| V12-32 | Truy cập từ xa và màn duyệt cho điện thoại — **chuyển sang V13** (`16-v13-remote-access.md`) | UX-40 | — | — |
 | V12-33 | Nơi lưu tài liệu trung gian của kit (`frame.md`, `plan.md`) | UX-45 | Thấp | kit, quyết định |
 
 Mặc định làm tuần tự theo Task ID. Phần B (V12-09 … V12-13) không phụ thuộc phần A về mã. Nếu product owner muốn thấy giao
@@ -605,7 +606,8 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 Mỗi task ở phần này bắt đầu bằng một ADR. Không viết mã trước khi product owner duyệt ADR.
 
 **Trạng thái (V12-28 … V12-33):** product owner đã duyệt cả sáu ADR ngày 2026-11-03 (có sửa: ADR-060 điều kiện merge, ADR-064
-phạm vi từ xa; xem từng ADR). Mã làm theo thứ tự Task ID. ADR:
+phạm vi từ xa; xem từng ADR). Mã làm theo thứ tự Task ID. V12-32 (ADR-064) chuyển sang V13 ngày 2026-11-04, không thuộc phạm vi
+V12. ADR:
 ADR-060 (merge/push/PR/CI), ADR-061 (kho secret), ADR-062 (chạy ứng dụng), ADR-063 (QA), ADR-064 (truy cập từ xa),
 ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architecture-decisions.md` mục 62–67. Mỗi ADR có phương án,
 đề xuất và câu hỏi cho product owner.
@@ -685,8 +687,10 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
 
 ### V12-32 — Truy cập từ xa và màn duyệt cho điện thoại (UX-40)
 
-- Giao diện hiện chỉ mở được trên máy chạy aw. Cần thiết kế bảo mật riêng (tunnel có xác thực, phạm vi thao tác cho phép từ xa)
-  trước khi làm màn duyệt gọn cho điện thoại.
+- **Chuyển sang V13 (product owner, 2026-11-04): task phức tạp, đụng ranh giới tin cậy của ADR-016.** Không làm trong V12, không tính
+  vào gate V12. Nội dung và quyết định đã duyệt của ADR-064 chuyển thành V13-01 … V13-04 trong `docs/design/16-v13-remote-access.md`.
+- Nội dung gốc: giao diện hiện chỉ mở được trên máy chạy aw. Cần thiết kế bảo mật riêng (tunnel có xác thực, phạm vi thao tác cho
+  phép từ xa) trước khi làm màn duyệt gọn cho điện thoại.
 
 ### V12-33 — Nơi lưu tài liệu trung gian của kit (UX-45)
 
@@ -698,6 +702,8 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
 
 ## Ngoài phạm vi V12
 
+- V12-32, truy cập từ xa và màn duyệt cho điện thoại: chuyển sang V13 (`16-v13-remote-access.md`), product owner quyết định
+  2026-11-04.
 - Chọn effort hoặc ngân sách riêng cho từng node (product owner đã từ chối, 2026-10-04).
 - Gọi model phân loại bên ngoài ở các gate (đã đánh giá TypeSafe Jev ngày 2026-11-03; product owner không chọn vì giá trị chưa
   nổi bật trong khi có rủi ro đưa dữ liệu ra ngoài).
@@ -710,4 +716,4 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
   chochuyennha (P2-02, P1-01, P2-01, P0-03) trên giao diện mới và xác nhận: thấy đúng vòng lặp và số lần chạy, đọc được lý do
   dừng của P2-02, mở được lịch sử mọi node bằng chuột và bàn phím.
 - Phần C: chạy trọn một task chochuyennha từ tạo task tới commit và đồng bộ nhánh mà không mở terminal.
-- Phần D: chỉ các task có ADR đã được duyệt mới tính vào gate.
+- Phần D: chỉ các task có ADR đã được duyệt mới tính vào gate. V12-32 không tính (đã chuyển sang V13).

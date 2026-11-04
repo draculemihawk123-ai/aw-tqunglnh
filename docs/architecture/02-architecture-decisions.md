@@ -1723,7 +1723,9 @@ mở PR, xem CI và merge vẫn phải làm trong terminal.
 
 ## 66. ADR-064 — Truy cập từ xa và màn duyệt cho điện thoại
 
-**Trạng thái:** đã duyệt (product owner, 2026-11-03), có sửa phạm vi (V12-32). Sửa ranh giới tin cậy của ADR-016 cho phiên từ xa.
+**Trạng thái:** đã duyệt (product owner, 2026-11-03), có sửa phạm vi. Sửa ranh giới tin cậy của ADR-016 cho phiên từ xa.
+**Triển khai:** V13 (V13-01 … V13-04 trong `docs/design/16-v13-remote-access.md`); chuyển khỏi V12-32 theo quyết định của product
+owner ngày 2026-11-04.
 
 **Quyết định:**
 
@@ -1751,7 +1753,7 @@ mở PR, xem CI và merge vẫn phải làm trong terminal.
 ## 68. Baseline sau review thiết kế
 
 ADR-001…065 là baseline hiện hành. ADR-060…065 (V12 phần D) được product owner duyệt ngày 2026-11-03; phần mã của chúng làm theo
-thứ tự V12-28 … V12-33, khối "Kết quả" trong `docs/design/15-v12-ui-operations.md` ghi phần nào đã có. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+thứ tự V12-28 … V12-33 (trừ V12-32, chuyển sang V13 ngày 2026-11-04), khối "Kết quả" trong `docs/design/15-v12-ui-operations.md` ghi phần nào đã có. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1808,7 +1810,7 @@ dụng ma trận sau:
 - ADR-061 (V12-29): kho secret theo repository, mã hóa, khóa theo hệ điều hành (DPAPI/Keychain/Secret Service/file), không vào prompt.
 - ADR-062 (V12-30): chạy ứng dụng của worktree trong `aw worker`, một phiên mỗi hồ sơ, tự tắt 2 giờ.
 - ADR-063 (V12-31): QA là APPROVAL có checklist; Create fix task; script Playwright trong artifact mặc định.
-- ADR-064 (V12-32) sửa ADR-016 cho phiên từ xa qua tunnel (khuyến nghị Tailscale), phạm vi thao tác hẹp, webhook thông báo.
+- ADR-064 (V13, chuyển từ V12-32) sửa ADR-016 cho phiên từ xa qua tunnel (khuyến nghị Tailscale), phạm vi thao tác hẹp, webhook thông báo.
 - ADR-065 (V12-33): nơi lưu frame.md/plan.md chọn theo project (mặc định trong repo).
 - ADR-059 (V12-26): đọc prompt của attempt AGENT bằng cách dựng lại từ ContextSnapshot (không lưu thêm), che secret, tối đa 512 KiB.
 - ADR-058 (V12-25): commit message nhiều dòng, marker là trailer cuối thân, mẫu commit message theo project (bỏ " (lần N)").
