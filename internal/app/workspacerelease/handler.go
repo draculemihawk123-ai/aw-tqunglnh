@@ -79,6 +79,9 @@ type ExecuteWorkspaceSetReleaseDeps struct {
 	IDs        idsource.Source
 	Provider   ports.WorkspaceProvider
 	Lifecycle  ports.WorkspaceLifecycle
+	// BeforeRelease (V12-33, ADR-065) runs before a READY repository workspace's worktree is removed — aw copies the worktree's
+	// aw-private task documents there. A failure is returned: the release is retried rather than losing them.
+	BeforeRelease func(ctx context.Context, repositoryWorkspaceID string) error
 }
 
 // ExecuteWorkspaceSetReleaseRequest is the parsed form of releaseJobPayload
@@ -252,6 +255,11 @@ func releaseOneRepositoryWorkspace(
 	if err != nil {
 		return fmt.Errorf("repository workspace %s has an invalid locator: %w", current.ID, err)
 	}
+	if deps.BeforeRelease != nil && current.State == workspace.RepositoryWorkspaceReady {
+		if err := deps.BeforeRelease(ctx, string(current.ID)); err != nil {
+			return fmt.Errorf("before releasing repository workspace %s: %w", current.ID, err)
+		}
+	}
 	if err := deps.Provider.Release(ctx, handle); err != nil {
 		return fmt.Errorf("release repository workspace %s: %w", current.ID, err)
 	}
@@ -277,6 +285,12 @@ type Handler struct {
 // not a same-named constructor, so New itself was unambiguous there.
 func NewHandler(uow ports.UnitOfWork, ids idsource.Source, provider ports.WorkspaceProvider, lifecycle ports.WorkspaceLifecycle) *Handler {
 	return &Handler{deps: ExecuteWorkspaceSetReleaseDeps{UnitOfWork: uow, IDs: ids, Provider: provider, Lifecycle: lifecycle}}
+}
+
+// WithBeforeRelease sets ExecuteWorkspaceSetReleaseDeps.BeforeRelease (V12-33).
+func (h *Handler) WithBeforeRelease(fn func(ctx context.Context, repositoryWorkspaceID string) error) *Handler {
+	h.deps.BeforeRelease = fn
+	return h
 }
 
 var _ workerpool.Handler = (*Handler)(nil)

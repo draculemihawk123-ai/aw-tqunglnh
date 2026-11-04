@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -150,17 +151,31 @@ func (r *Runner) Tick(ctx context.Context) error {
 		case s.State == ports.RunAppRequested:
 			r.claim(ctx, s)
 		case s.WorkerID == r.d.WorkerID && mine == nil:
-			// This worker restarted while it ran (its processes died with it), or the goroutine ended without closing it.
-			r.finish(ctx, s.ID, ports.RunAppFailed, "the worker restarted while the application ran")
+			// This worker restarted while it ran, or the goroutine ended without closing it: end what is left of its processes.
+			r.finish(ctx, s.ID, ports.RunAppFailed, "the worker restarted while the application ran"+r.reaped(s.ID))
 		case s.WorkerID == r.d.WorkerID:
 			if reason := r.mustStop(ctx, s, now); reason != "" {
 				mine.stop(reason)
 			}
+		case s.WorkerID != r.d.WorkerID && r.d.Host != nil && r.d.Host.WorkerGone(s.ID):
+			// The worker that ran it is gone (killed, crashed): its processes may still hold the ports.
+			r.finish(ctx, s.ID, ports.RunAppFailed, fmt.Sprintf("worker %s stopped while the application ran", s.WorkerID)+r.reaped(s.ID))
 		case now.After(s.DeadlineAt.Add(orphanAfter)):
 			r.finish(ctx, s.ID, ports.RunAppFailed, fmt.Sprintf("worker %s did not stop it at its deadline (that worker is gone)", s.WorkerID))
 		}
 	}
 	return nil
+}
+
+// reaped ends the processes a dead worker left for the session and says which.
+func (r *Runner) reaped(sessionID string) string {
+	if r.d.Host == nil {
+		return ""
+	}
+	if killed := r.d.Host.ReapSession(sessionID); len(killed) > 0 {
+		return "; ended the processes it left: " + strings.Join(killed, ", ")
+	}
+	return ""
 }
 
 func (r *Runner) mustStop(ctx context.Context, s ports.RunAppSession, now time.Time) string {
@@ -300,8 +315,15 @@ func (r *Runner) execute(ctx context.Context, s ports.RunAppSession, rs *running
 	}
 	for _, proc := range p.profile.Processes {
 		if proc.Port != 0 && r.d.Host.PortInUse(proc.Port) {
-			return ports.RunAppFailed, fmt.Sprintf("port %d (%s) is in use: another program holds it — stop it, then start again", proc.Port, proc.Name)
+			holder := "another program"
+			if who := r.d.Host.PortHolder(proc.Port); who != "" {
+				holder = who
+			}
+			return ports.RunAppFailed, fmt.Sprintf("port %d (%s) is in use: %s holds it — stop it, then start again", proc.Port, proc.Name, holder)
 		}
+	}
+	if err := r.d.Host.RecordWorker(s.ID); err != nil {
+		r.log("run app: cannot record the worker of the session", map[string]any{"session": s.ID, "error": err.Error()})
 	}
 	envs := make([]map[string]string, len(p.profile.Processes))
 	var secretValues []string
@@ -347,6 +369,13 @@ func (r *Runner) execute(ctx context.Context, s ports.RunAppSession, rs *running
 			ID: ports.ProcessID("runapp/" + s.ID + "/" + proc.Name), Executable: proc.Argv[0], Argv: proc.Argv[1:],
 			WorkingDirectory: filepath.Join(p.dir, filepath.FromSlash(proc.Dir)), Environment: envs[i],
 			InheritedEnvironment: r.d.InheritedEnvironment, Timeout: timeout, GracePeriod: stopGrace, OutputLimitBytes: logLimitBytes,
+			KillWithParent: true,
+		}
+		name := proc.Name
+		spec.OnStarted = func(pid int) {
+			if err := r.d.Host.RecordProcess(s.ID, name, pid); err != nil {
+				r.log("run app: cannot record a process", map[string]any{"session": s.ID, "process": name, "error": err.Error()})
+			}
 		}
 		started++
 		go func(name string) {

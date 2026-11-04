@@ -435,7 +435,7 @@ reason and the log tail of every process:
 
 | Reason | What to do |
 |---|---|
-| `port N (name) is in use` | Another program (often a dev server left from an earlier run) listens there: stop it, then Start. |
+| `port N (name) is in use: <program> (pid P) holds it` | That program listens there (often a dev server left from an earlier run): stop it (`kill P`, Task Manager), then Start. aw names it but never kills it. "another program" means aw could not read it (another user's process). |
 | `secret X (name) cannot be resolved` | Set it in the repository's **Secrets** (`aw repository secret set`), or in the worker's environment. |
 | `name exited (code N); see its log` | The process stopped by itself: read its log (a missing dependency, a wrong `dir`, an executable not in the worker's `PATH`). |
 | `name did not start: …` | `argv[0]` was not found or the `dir` does not exist in the worktree; on Windows give `pnpm.cmd` and the like. |

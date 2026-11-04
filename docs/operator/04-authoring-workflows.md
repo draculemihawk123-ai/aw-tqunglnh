@@ -788,5 +788,9 @@ directory it was created with.
 Keeping the documents: **Export to repo** on the Workspace tab (`aw repository-workspace aw-documents export --project-id <p>
 <repositoryWorkspaceId>`) copies `.aw/features/<rest>` to `docs/features/<rest>` in the worktree, uncommitted, for the normal commit.
 It needs the worktree `READY` and no attempt writing; a document that already exists there with other content stops the whole export
-(nothing is written) until you confirm **Overwrite** (`--overwrite`). Releasing a worktree removes its `.aw/` with it: export first
-what you want to keep.
+(nothing is written) until you confirm **Overwrite** (`--overwrite`).
+
+aw also keeps its own copy of every `.aw/features/` file (an artifact that does not expire, known secret values redacted): after each
+successful agent attempt in the worktree, and again right before the release job removes the worktree (if that copy fails, the release
+is retried and the worktree is kept). A file the worktree no longer has is listed as **aw's copy**; a released worktree still lists its
+documents, and Export to repo (in a READY worktree) uses aw's copy for a file that is gone.

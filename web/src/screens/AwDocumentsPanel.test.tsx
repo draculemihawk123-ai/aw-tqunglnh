@@ -43,6 +43,16 @@ describe('task documents kept in aw (V12-33)', () => {
     expect(await screen.findByTestId('aw-export-done')).toHaveTextContent('Exported 1 file to docs/features/');
   });
 
+  it('shows aw\'s copies of a released worktree, without export', async () => {
+    vi.mocked(api.listAwDocuments).mockResolvedValue({ repositoryWorkspaceId: 'rw1', workspaceState: 'RELEASED', documents: [
+      { path: '.aw/features/quote/tasks/T-01/frame.md', size: 8, content: '# Frame\n', source: 'SNAPSHOT', snapshotAt: '2026-11-04T10:00:00Z' },
+    ] } as never);
+    wrap(<AwDocumentsPanel projectId="p" repo={{ ...repo, state: 'RELEASED' } as RepositoryWorkspaceState} />);
+    expect(await screen.findByText("(aw's copy)")).toBeInTheDocument();
+    expect(screen.getByText(/the worktree is released: aw's copies/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Export to repo' })).toBeNull();
+  });
+
   it('hides itself when the worktree has no such document', async () => {
     vi.mocked(api.listAwDocuments).mockResolvedValue({ repositoryWorkspaceId: 'rw1', documents: [] } as never);
     const { container } = wrap(<AwDocumentsPanel projectId="p" repo={repo} />);

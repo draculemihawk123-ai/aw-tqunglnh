@@ -133,8 +133,13 @@ aw repository-workspace run-app stop   --project-id <p> <repositoryWorkspaceId>
   runs it, while the worktree is not `READY`, and while an attempt holds the worktree's write lease.
 - **It stops, killing every process tree**, on Stop, at the automatic stop, when the worktree is released or quarantined, when an
   attempt takes the write lease, when any of its processes exits (the session ends `FAILED: backend exited (code 1)`), and when the
-  worker stops. A worker killed hard (`kill -9`, a crash) cannot kill its children on Unix: when it starts again it closes its
-  sessions `FAILED`, and a port still held is reported at the next Start; on Windows the Job Object ends them with the worker.
+  worker stops.
+- **A worker killed hard** (`kill -9`, a crash): on Windows the Job Object ends the tree with the worker; on Linux each started
+  process gets `PR_SET_PDEATHSIG` and dies with the worker. Each session records the worker's and every process's pid and start time
+  under `<artifact-root>/run-app/<session>/`; the next tick of any worker that finds the recorded worker gone ends what is left of those
+  process groups (only while pid and start time still match, so a reused pid is never killed) and closes the session `FAILED`, naming
+  them. A port that is still busy at Start is reported with the program holding it: `port 8080 (backend) is in use: java (pid 4120)
+  holds it`; aw never kills a process it did not start.
 - **Logs**: one per process, under `<artifact-root>/run-app/<session>/<process>.log` (mode 0600, at most 8 MiB each — later output is
   dropped), with every resolved secret value replaced by `[REDACTED]`. The UI and `status` show the last 16 KiB.
 - A running application keeps the profile it started with; a changed profile applies at the next Start.

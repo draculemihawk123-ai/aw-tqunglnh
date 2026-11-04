@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/taQuangLing/agent-workflow/internal/app/awdocuments"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
@@ -443,7 +444,34 @@ func (e *AgentNodeExecutor) buildEvidence(
 	if err := stageAgentOutputEvidence(ctx, e.uow, e.ids, e.clk, e.store, req, request, resolved, evidence); err != nil {
 		return nil, err
 	}
+	// V12-33 (ADR-065): copy the task documents the agent keeps in the worktree's .aw/ into aw (best effort: a failure here never
+	// fails the attempt; the release job copies them again before the worktree is removed).
+	e.snapshotAwDocuments(ctx, req, request, resolved)
 	return evidence, nil
+}
+
+func (e *AgentNodeExecutor) snapshotAwDocuments(ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources) {
+	store, ok := e.workspaces.(ports.AwDocumentStore)
+	if !ok || e.store == nil {
+		return
+	}
+	var familyID string
+	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+		familyID = string(run.FamilyID)
+		return err
+	}); err != nil {
+		return
+	}
+	deps := awdocuments.Deps{UnitOfWork: e.uow, Store: store, Artifacts: e.store, IDs: e.ids, Now: e.clk.Now, Matcher: e.matcher}
+	for _, mount := range request.WorkspaceMounts {
+		if mount.Access != ports.WorkspaceReadWrite {
+			continue
+		}
+		_, _ = awdocuments.Snapshot(ctx, deps, awdocuments.SnapshotTarget{
+			ProjectID: string(resolved.projectID), FamilyID: familyID, RepositoryID: string(mount.RepositoryID), Handle: mount.Handle,
+		})
+	}
 }
 
 // terminalEventSequence returns the highest agent_events.Sequence durably

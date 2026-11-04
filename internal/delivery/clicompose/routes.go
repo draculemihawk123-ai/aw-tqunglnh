@@ -528,7 +528,7 @@ func workspaceRoutes() []Route {
 	deps := func(d *Deps) workspace.Dependencies {
 		return workspace.Dependencies{
 			UOW: d.UoW, IDs: d.ids(), Authority: workapp.NewEligibilityAuthority(d.UoW),
-			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now, Forge: d.ForgeClient,
+			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now, Forge: d.ForgeClient, Artifacts: d.ArtifactStore,
 		}
 	}
 	const needs = NeedUoW | NeedWorkspace
@@ -567,10 +567,10 @@ func workspaceRoutes() []Route {
 			return workspace.RunRepositoryWorkspaceRemote(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "remote"),
 		// V12-33 (ADR-065)
-		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+		route(needs|NeedArtifactStore, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceAwDocumentsList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "aw-documents", "list"),
-		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+		route(needs|NeedArtifactStore, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceAwDocumentsExport(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "aw-documents", "export"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {

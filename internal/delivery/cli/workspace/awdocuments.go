@@ -26,7 +26,7 @@ func awDocumentsDeps(deps Dependencies) (awdocuments.Deps, error) {
 	if store == nil {
 		return awdocuments.Deps{}, errors.New("workspace: this process has no Git workspace provider (pass --workspace-root)")
 	}
-	return awdocuments.Deps{UnitOfWork: deps.UOW, Store: store}, nil
+	return awdocuments.Deps{UnitOfWork: deps.UOW, Store: store, Artifacts: deps.Artifacts}, nil
 }
 
 // RunRepositoryWorkspaceAwDocumentsList implements `aw repository-workspace aw-documents list --project-id <p> <repositoryWorkspaceId>`.

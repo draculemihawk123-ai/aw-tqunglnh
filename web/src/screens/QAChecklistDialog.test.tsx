@@ -11,9 +11,15 @@ vi.mock('../api/message', async () => {
   return { ...actual, uploadAttachment: vi.fn() };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 't' }), getSessionToken: () => 't' }));
+vi.mock('../api/generated', async () => {
+  const actual = await vi.importActual<typeof import('../api/generated')>('../api/generated');
+  return { ...actual, getWorkItem: vi.fn().mockResolvedValue({ effectiveScope: [
+    { repositoryId: 'web', access: 'WRITE', pathScopes: ['frontend/src'] }, { repositoryId: 'api', access: 'READ' },
+  ] }) };
+});
 vi.mock('./NewTaskDialog', () => ({
-  NewTaskDialog: ({ initial, onCreated }: { initial: { title: string; behavior: string; kind: string }; onCreated: (id: string) => void }) => (
-    <div data-testid="new-task">{initial.kind} | {initial.title} | {initial.behavior}<button onClick={() => onCreated('wi-fix-1')}>create</button></div>
+  NewTaskDialog: ({ initial, onCreated }: { initial: { title: string; behavior: string; kind: string; scopes?: { repositoryId: string; pathScopes: string[] }[] }; onCreated: (id: string) => void }) => (
+    <div data-testid="new-task">{initial.kind} | {initial.title} | {initial.behavior} | scope {(initial.scopes ?? []).map(s => `${s.repositoryId}:${s.pathScopes.join(',')}`).join(';')}<button onClick={() => onCreated('wi-fix-1')}>create</button></div>
   ),
 }));
 
@@ -42,6 +48,7 @@ describe('QAChecklistDialog (V12-31)', () => {
     expect(checklistOutcome(checklist, { 'ac-1': { result: 'PASSED', note: '', attachments: [] }, 'item-1': { result: 'PASSED', note: '', attachments: [] } })).toBe('passed');
     expect(checklistOutcome(checklist, { 'ac-1': { result: 'FAILED', note: 'x', attachments: [] }, 'item-1': { result: 'PASSED', note: '', attachments: [] } })).toBe('failed');
     expect(fixTaskDraft(checklist.items[1], 'menu overflows', 'QA quote')).toMatchObject({ kind: 'bugfix', title: 'Fix: Works on a phone', criteria: [{ description: 'Works on a phone' }] });
+    expect(fixTaskDraft(checklist.items[1], 'x', 'QA quote', [{ repositoryId: 'web', access: 'WRITE' }]).scopes).toEqual([{ repositoryId: 'web', pathScopes: [], reason: 'Fix found by the QA of "QA quote"' }]);
   });
 
   it('submits every result with notes and images; a failed item needs a note and offers Create fix task', async () => {
@@ -59,6 +66,7 @@ describe('QAChecklistDialog (V12-31)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create fix task' }));
     expect(screen.getByTestId('new-task')).toHaveTextContent('bugfix | Fix: Works on a phone | QA of "QA quote" failed on: Works on a phone');
     expect(screen.getByTestId('new-task')).toHaveTextContent('What is wrong: menu overflows');
+    expect(screen.getByTestId('new-task')).toHaveTextContent('scope web:frontend/src'); // the QA task's WRITE scope, not its READ ones
     await userEvent.click(screen.getByRole('button', { name: 'create' }));
     expect(screen.getByText('Fix task created: wi-fix-1')).toBeInTheDocument();
 

@@ -6,12 +6,15 @@ package workspacereconcile_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -178,7 +181,9 @@ func TestRunApp_APortInUseOrAnExitingProcessEndsTheSessionFailed(t *testing.T) {
 	}
 	runner.Wait()
 	st, _ := runapp.GetStatus(ctx, d, f.projectID, string(f.rw.ID))
-	if st.Session.State != string(ports.RunAppFailed) || !strings.Contains(st.Session.Problem, "port "+strconv.Itoa(port)+" (api) is in use") {
+	// The holder is named: this test process listens there.
+	if st.Session.State != string(ports.RunAppFailed) || !strings.Contains(st.Session.Problem, "port "+strconv.Itoa(port)+" (api) is in use") ||
+		(runtime.GOOS == "linux" && !strings.Contains(st.Session.Problem, fmt.Sprintf("(pid %d) holds it", os.Getpid()))) {
 		t.Fatalf("session = %+v", st.Session)
 	}
 
@@ -238,5 +243,71 @@ func TestRunApp_RefusesAWriterAndStopsWhenOneAppears(t *testing.T) {
 	}
 	if _, err := runapp.GetProfile(ctx, d, "another-project", f.repositoryID); !errors.Is(err, ports.ErrPersistenceNotFound) {
 		t.Fatalf("another project's repository: %v", err)
+	}
+}
+
+func TestRunApp_AWorkerThatStartsAgainEndsWhatADeadWorkerLeft(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses process groups")
+	}
+	f := newRealFixture(t, "runapp-orphan.db")
+	ctx := context.Background()
+	root := t.TempDir()
+	host := runapphost.New(root)
+	d := runapp.Deps{UnitOfWork: f.uow, Host: host}
+	if _, err := runapp.SetProfile(ctx, d, runAppCommand(f, "set", "SetRunAppProfile"), f.projectID, f.repositoryID,
+		runapp.Profile{Processes: []runapp.Process{{Name: "api", Argv: []string{"sleep", "60"}}}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runapp.Start(ctx, d, runAppCommand(f, "start", "StartRunApp"), f.projectID, string(f.rw.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The dead worker: it took the session and started "api" in its own process group, then died hard.
+	if err := f.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		s, err := tx.RunApp().GetRunAppSession(ctx, session.ID)
+		if err != nil {
+			return err
+		}
+		v := s.Version
+		s.State, s.WorkerID = ports.RunAppRunning, "worker-dead"
+		_, err = tx.RunApp().UpdateRunAppSession(ctx, s, v)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orphan := exec.Command("sleep", "60")
+	orphan.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { _ = orphan.Wait(); close(exited) }()
+	t.Cleanup(func() { _ = orphan.Process.Kill() })
+	if err := host.RecordProcess(session.ID, "api", orphan.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	// A worker record whose process is gone: a pid with another start time.
+	if err := os.WriteFile(filepath.Join(root, "run-app", session.ID, "aw.worker.pid"), []byte(fmt.Sprintf("%d\nnot-its-start-time\n", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !host.WorkerGone(session.ID) {
+		t.Fatal("the recorded worker should be gone")
+	}
+
+	runner := runapp.NewRunner(runapp.RunnerDeps{UnitOfWork: f.uow, Host: host, Supervisor: process.NewSupervisor(), Workspaces: f.provider,
+		Secrets: mapSecrets{}, Redact: redact.NewMatcher(), WorkerID: "worker-new"})
+	if err := runner.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the orphan was not ended")
+	}
+	st, _ := runapp.GetStatus(ctx, d, f.projectID, string(f.rw.ID))
+	if st.Session.State != string(ports.RunAppFailed) || !strings.Contains(st.Session.Problem, "worker worker-dead stopped") ||
+		!strings.Contains(st.Session.Problem, fmt.Sprintf("api (pid %d)", orphan.Process.Pid)) {
+		t.Fatalf("session = %+v", st.Session)
 	}
 }

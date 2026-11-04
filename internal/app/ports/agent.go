@@ -555,6 +555,12 @@ type ProcessSpec struct {
 	// to exhaust worker memory. Zero uses Supervisor's own default rather
 	// than meaning "unbounded"; this port has no unbounded option (V5-05).
 	OutputLimitBytes int
+	// OnStarted (V12-30) is called with the child's pid right after it started (nil: not called), so a caller can record it and
+	// find the process tree again after a crash.
+	OnStarted func(pid int)
+	// KillWithParent (V12-30) asks the OS to kill the child when the supervising process dies (Linux PR_SET_PDEATHSIG; no effect
+	// elsewhere: Windows already kills the Job Object's tree when the supervisor exits).
+	KillWithParent bool
 }
 
 type ProcessResult struct {

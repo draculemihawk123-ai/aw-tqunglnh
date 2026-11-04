@@ -28,6 +28,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
 	"github.com/taQuangLing/agent-workflow/internal/app/artifactsweep"
+	"github.com/taQuangLing/agent-workflow/internal/app/awdocuments"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -483,7 +484,13 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	registry.Register(readinesscheck.BaselineEvidenceJobKind, readinesscheck.New(d.uow, d.ids, d.supervisor, d.provider))
 	registry.Register(appwork.WorkspaceProvisionJobKind, workspaceprovision.New(d.uow, d.ids, d.provider))
 	registry.Register(workspacereconcile.WorkspaceReconciliationJobKind, workspacereconcile.New(d.uow, d.ids, d.provider, d.store))
-	registry.Register(workspacerelease.WorkspaceSetReleaseJobKind, workspacerelease.NewHandler(d.uow, d.ids, d.provider, d.store))
+	// V12-33 (ADR-065): copy the worktree's aw-private task documents into aw before it is removed.
+	awDocs := awdocuments.Deps{UnitOfWork: d.uow, Store: d.provider, Artifacts: d.artifacts, IDs: d.ids, Matcher: d.matcher}
+	registry.Register(workspacerelease.WorkspaceSetReleaseJobKind, workspacerelease.NewHandler(d.uow, d.ids, d.provider, d.store).
+		WithBeforeRelease(func(ctx context.Context, repositoryWorkspaceID string) error {
+			_, err := awdocuments.SnapshotRepositoryWorkspace(ctx, awDocs, repositoryWorkspaceID)
+			return err
+		}))
 	// Release and projection.
 	registry.Register(releasesetcommit.ReleaseSetLocalCommitJobKind, releasesetcommit.NewHandler(releasesetcommit.ExecuteReleaseSetLocalCommitDeps{
 		UnitOfWork: d.uow, IDs: d.ids, WriteLeases: d.store, MarkerReader: d.provider, Creator: d.provider,

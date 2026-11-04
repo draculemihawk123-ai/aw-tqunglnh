@@ -15,8 +15,11 @@ type unixProcessTree struct{}
 
 func newProcessTree() processTree { return unixProcessTree{} }
 
-func (unixProcessTree) configure(cmd *exec.Cmd) {
+func (unixProcessTree) configure(cmd *exec.Cmd, killWithParent bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if killWithParent {
+		setParentDeathSignal(cmd.SysProcAttr)
+	}
 }
 
 func (unixProcessTree) bind(*exec.Cmd) error { return nil }

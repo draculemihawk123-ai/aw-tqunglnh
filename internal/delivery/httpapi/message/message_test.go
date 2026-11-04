@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -541,7 +542,7 @@ func TestAppendMessage_FreeTextLookingLikeApproval_NeverMutatesWorkItemState(t *
 	if err != nil {
 		t.Fatalf("GetWorkItem (after): %v", err)
 	}
-	if before != after {
+	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("WorkItem changed after a plain-text message that merely SAYS \"approve\": before=%+v after=%+v — a message must never itself be a control signal", before, after)
 	}
 }

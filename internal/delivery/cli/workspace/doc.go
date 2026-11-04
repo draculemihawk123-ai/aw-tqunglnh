@@ -132,4 +132,6 @@ type Dependencies struct {
 	// (time.Now().UTC()) — nil in production, set only for deterministic
 	// tests.
 	Now func() time.Time
+	// Artifacts (V12-33) holds aw's copies of the worktree task documents (`repository-workspace aw-documents`).
+	Artifacts ports.ArtifactStore
 }

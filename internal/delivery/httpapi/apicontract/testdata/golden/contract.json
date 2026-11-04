@@ -2856,6 +2856,11 @@
             "name": "Contract",
             "jsonTag": "contract,omitempty",
             "type": "*work.WorkItemContractView"
+          },
+          {
+            "name": "EffectiveScope",
+            "jsonTag": "effectiveScope,omitempty",
+            "type": "[]work.EffectiveScopeView"
           }
         ]
       }
@@ -3567,6 +3572,11 @@
           {
             "name": "RepositoryWorkspaceID",
             "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "WorkspaceState",
+            "jsonTag": "workspaceState",
             "type": "string"
           },
           {

@@ -18,9 +18,9 @@ type ExportRequest struct {
 	Overwrite bool `json:"overwrite,omitempty"`
 }
 
-// RegisterRoutes registers the two routes. store is the Git workspace provider (nil: they answer UNAVAILABLE).
-func RegisterRoutes(routes *httpapi.RouteRegistry, uow ports.UnitOfWork, store ports.AwDocumentStore) {
-	deps := appawdocs.Deps{UnitOfWork: uow, Store: store}
+// RegisterRoutes registers the two routes. deps.Store is the Git workspace provider (nil: only aw's copies are listed, export answers
+// UNAVAILABLE); deps.Artifacts holds aw's copies.
+func RegisterRoutes(routes *httpapi.RouteRegistry, deps appawdocs.Deps) {
 	base := "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents"
 	routes.Register(httpapi.RouteDescriptor{
 		Method: http.MethodGet, Path: base, OperationID: "listAwDocuments", ScopeKind: httpapi.ScopeProject,

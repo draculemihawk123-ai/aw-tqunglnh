@@ -109,6 +109,8 @@ type Tx interface {
 	Secrets() SecretsRepository
 	// RunApp (V12-30, ADR-062) is run-app profiles and sessions.
 	RunApp() RunAppRepository
+	// AwDocuments (V12-33, ADR-065) is aw's copies of the per-task documents kept in a worktree's .aw/.
+	AwDocuments() AwDocumentSnapshotRepository
 	// AgentEvents is populated now (V5-08A, docs/design/07-v5-execution-evidence.md):
 	// the production, registry-normalized agent_events contract (see
 	// AgentEventsRepository's own doc comment, internal/app/ports/agentevent.go).

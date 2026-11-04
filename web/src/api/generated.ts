@@ -927,6 +927,7 @@ export interface GetWorkItemResponse {
   sourceNodeRunId?: string;
   workflowVersionId?: string;
   contract?: unknown | null;
+  effectiveScope?: unknown[];
 }
 
 // GET /projects/{projectId}/work-items/{workItemId} (scope: PROJECT)
@@ -1136,6 +1137,7 @@ export function listAttemptEvents(attemptId: string, opts: RequestOptions = {}):
 
 export interface ListAwDocumentsResponse {
   repositoryWorkspaceId: string;
+  workspaceState: string;
   documents: unknown[];
 }
 

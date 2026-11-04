@@ -108,6 +108,7 @@ type Tx struct {
 	forge              *ForgeRepository
 	secrets            *SecretsRepository
 	runApp             *RunAppRepository
+	awDocuments        *AwDocumentSnapshotRepository
 	agentEvents        *AgentEventsRepository
 	checkpoints        *CheckpointsRepository
 	safeSettings       *SafeSettingsRepository
@@ -153,6 +154,7 @@ func newTx() Tx {
 		forge:            &ForgeRepository{},
 		secrets:          &SecretsRepository{},
 		runApp:           &RunAppRepository{},
+		awDocuments:      &AwDocumentSnapshotRepository{},
 		agentEvents:      &AgentEventsRepository{},
 		checkpoints:      &CheckpointsRepository{},
 		// safeSettings is seeded at Version 1 with the zero-value ("never
@@ -191,6 +193,7 @@ func (t Tx) clone() Tx {
 	clone.forge = t.forge.clone()
 	clone.secrets = t.secrets.clone()
 	clone.runApp = t.runApp.clone()
+	clone.awDocuments = t.awDocuments.clone()
 	clone.agentEvents = t.agentEvents.clone()
 	clone.checkpoints = t.checkpoints.clone()
 	clone.safeSettings = t.safeSettings.clone()
@@ -222,6 +225,7 @@ func (t Tx) ProjectSettings() ports.ProjectSettingsRepository      { return t.pr
 func (t Tx) Forge() ports.ForgeRepository                          { return t.forge }
 func (t Tx) Secrets() ports.SecretsRepository                      { return t.secrets }
 func (t Tx) RunApp() ports.RunAppRepository                        { return t.runApp }
+func (t Tx) AwDocuments() ports.AwDocumentSnapshotRepository       { return t.awDocuments }
 func (t Tx) AgentEvents() ports.AgentEventsRepository              { return t.agentEvents }
 func (t Tx) Checkpoints() ports.CheckpointsRepository              { return t.checkpoints }
 func (t Tx) SafeSettings() ports.SafeSettingsRepository            { return t.safeSettings }

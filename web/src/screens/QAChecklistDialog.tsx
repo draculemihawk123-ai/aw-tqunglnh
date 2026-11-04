@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { getWorkItem } from '../api/generated';
 import { uploadAttachment } from '../api/message';
 import type { TaskDraft } from '../api/newTask';
 import type { ApprovalChecklistView, ChecklistItemResult, ChecklistItemView } from '../api/rundetail';
-import { getSessionToken } from '../api/session';
+import { getSessionToken, withSessionToken } from '../api/session';
 import { Button, Dialog, InlineError } from '../components/ui';
 import { NewTaskDialog } from './NewTaskDialog';
 
@@ -15,10 +16,15 @@ export function checklistOutcome(checklist: ApprovalChecklistView, states: Recor
   return checklist.items.every(i => states[i.id].result === 'PASSED') ? checklist.passedOutcome : checklist.failedOutcome;
 }
 
-/** The draft "Create fix task" starts from: a bugfix whose behavior is the failed item and its note. */
-export function fixTaskDraft(item: ChecklistItemView, note: string, qaTitle: string): Partial<TaskDraft> {
+export interface ScopeView { repositoryId: string; access: string; pathScopes?: string[]; reason?: string }
+
+/** The draft "Create fix task" starts from: a bugfix whose behavior is the failed item and its note, in the QA task's write scope. */
+export function fixTaskDraft(item: ChecklistItemView, note: string, qaTitle: string, qaScope: ScopeView[] = []): Partial<TaskDraft> {
+  const scopes = qaScope.filter(s => s.access === 'WRITE')
+    .map(s => ({ repositoryId: s.repositoryId, pathScopes: s.pathScopes ?? [], reason: `Fix found by the QA of "${qaTitle}"` }));
   return {
     kind: 'bugfix',
+    ...(scopes.length ? { scopes } : {}),
     title: `Fix: ${item.text}`.slice(0, 200),
     behavior: `QA of "${qaTitle}" failed on: ${item.text}\n\nWhat is wrong: ${note || '(no note)'}`,
     criteria: [{ description: item.text }],
@@ -38,6 +44,12 @@ export function QAChecklistDialog({ projectId, workItemId, qaTitle, checklist, p
   const [states, setStates] = useState<Record<string, ItemState>>(() =>
     Object.fromEntries(checklist.items.map(i => [i.id, { note: '', attachments: [] }])));
   const [fixing, setFixing] = useState<ChecklistItemView | null>(null);
+  // V12-31 (ADR-063): a fix task starts in the scope of the task under QA.
+  const qaItem = useQuery({
+    queryKey: ['workItem', projectId, workItemId],
+    queryFn: async () => (await getWorkItem(projectId, workItemId, withSessionToken())) as unknown as { effectiveScope?: ScopeView[] },
+    enabled: !isOffline,
+  });
   const [created, setCreated] = useState<string[]>([]);
   const set = (id: string, patch: Partial<ItemState>) => setStates(s => ({ ...s, [id]: { ...s[id], ...patch } }));
   const upload = useMutation({
@@ -105,7 +117,7 @@ export function QAChecklistDialog({ projectId, workItemId, qaTitle, checklist, p
       </Dialog>
       {fixing && (
         <NewTaskDialog projectId={projectId} parentWorkItemId={workItemId} isOffline={isOffline}
-          initial={fixTaskDraft(fixing, states[fixing.id]?.note ?? '', qaTitle)}
+          initial={fixTaskDraft(fixing, states[fixing.id]?.note ?? '', qaTitle, qaItem.data?.effectiveScope)}
           onClose={() => setFixing(null)} onCreated={id => { setFixing(null); setCreated(c => [...c, id]); }} />
       )}
     </>

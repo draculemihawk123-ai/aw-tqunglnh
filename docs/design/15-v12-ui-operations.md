@@ -643,7 +643,8 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
   `aw repository secret list|set|delete` (giá trị từ stdin/file, `--env-file`). Giao diện: nút **Secrets** trên từng repository
   (không bao giờ hiện giá trị; nhập `.env` chỉ hiện tên). Docs: operator 03/05/08. Test: `secretstore_test.go` (SQLite thật, không có
   giá trị rõ trong DB, giải theo repo, AAD chặn đổi tên, `.env`), `file_test.go`, `secret_scope_internal_test.go`,
-  `RepositorySecretsDialog.test.tsx`; DPAPI và Keychain chỉ được biên dịch (GOOS=windows/darwin), chưa chạy trên máy thật. Ghi chú:
+  `RepositorySecretsDialog.test.tsx`; DPAPI (Windows) và Keychain (macOS) chỉ được biên dịch (GOOS=windows/darwin), chưa chạy trên máy
+  thật; product owner chấp nhận cho Keychain macOS chỉ biên dịch (2026-11-04), DPAPI chạy ở bước kiểm trên Windows sau PR. Ghi chú:
   trên macOS khóa được đưa cho `security` qua argv trong lúc tạo lần đầu (lệnh không đọc mật khẩu từ stdin).
 
 ### V12-30 — Chạy ứng dụng của worktree để QA tay (UX-32)
@@ -662,7 +663,24 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
   (Start/Stop, trạng thái, lý do, log, Open preview, trình sửa hồ sơ JSON có mẫu). Docs: operator 03/05/09. Test:
   `runapp_sqlite_test.go` (SQLite thật, worktree thật, supervisor thật: chạy hai tiến trình trong thư mục con, secret bị che trong log,
   Stop giết tiến trình; cổng bận, tiến trình tự thoát, secret thiếu → FAILED; write lease và project khác bị từ chối),
-  `RunAppPanel.test.tsx`. Chưa làm: tìm tên tiến trình đang giữ cổng (chỉ báo cổng bận); chưa chạy trên Windows thật.
+  `RunAppPanel.test.tsx`.
+- **Bổ sung trước PR (product owner, 2026-11-04):**
+  - Cổng bận thì báo tiến trình đang giữ cổng (tên và PID), chỉ báo, không giết: Linux đọc `/proc/net/tcp(6)` rồi tìm inode của socket
+    trong `/proc/<pid>/fd`; macOS hỏi `lsof -iTCP:<port> -sTCP:LISTEN`; Windows gọi `GetExtendedTcpTable` (IPv4 và IPv6) rồi
+    `QueryFullProcessImageName`. Ví dụ: `port 8080 (backend) is in use: java (pid 4120) holds it`. Tiến trình của user khác không đọc
+    được thì vẫn báo "another program".
+  - Tiến trình mồ côi khi worker bị giết đột ngột: mỗi phiên ghi PID và thời điểm khởi động của worker (`aw.worker.pid`) và của từng tiến
+    trình (`<process>.pid`) trong `<artifact-root>/run-app/<session>/`. Mỗi vòng, worker thấy một phiên đang chạy mà worker ghi trong đó
+    không còn (PID không còn, hoặc PID đã bị dùng lại vì thời điểm khởi động khác) thì giết cả nhóm tiến trình đã ghi (SIGTERM rồi SIGKILL
+    sau 3 giây; chỉ khi PID và thời điểm khởi động còn khớp, nên không giết nhầm tiến trình khác) và đóng phiên FAILED, nêu tên các tiến
+    trình đã dọn; worker khởi động lại với cùng `--worker-id` cũng làm vậy với phiên của chính nó. Trên Linux tiến trình con có
+    `PR_SET_PDEATHSIG=SIGKILL` (chỉ cho Run app, không cho agent/command): chết theo worker ngay cả khi worker bị `kill -9`; tín hiệu này chỉ
+    tới tiến trình con trực tiếp, cháu (ví dụ `java` dưới `mvnw`) do bước dọn ở trên xử lý. macOS không có PDEATHSIG nên chỉ có bước dọn.
+    Windows: Job Object của supervisor (`KILL_ON_JOB_CLOSE`) đã giết cả cây khi worker chết; bước dọn chỉ còn `TerminateProcess` tiến trình
+    đã ghi.
+  - Test: `runapp_sqlite_test.go` (cổng bận nêu PID của tiến trình đang giữ; worker chết để lại `sleep` trong nhóm riêng, worker mới dọn và
+    đóng phiên FAILED), `pdeathsig_linux_test.go`. Windows (`GetExtendedTcpTable`, `GetProcessTimes`, `TerminateProcess`) chỉ được biên
+    dịch; macOS (`lsof`, `ps`) chỉ được biên dịch. Chưa chạy trên Windows thật.
 
 ### V12-31 — QA trong aw (UX-33, UX-43)
 
@@ -680,8 +698,11 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
   tiêu đề, behavior, tiêu chí); khung node hiện checklist đã chốt. Kit 1.10.0: `wf-qa`, `wf-bugfix-ui` (agent `agent-flow-repro-ui`, skill
   `bugfix.repro-ui`, lệnh `cmd-ui-expect-fail`/`cmd-ui-verify` qua `ui-check.sh`: script `.aw-qa/*.mjs` ngoài repo mặc định, bật
   `AW_QA_SCRIPTS_IN_REPO=1` để đưa vào repo, ảnh và SHA-256 trong output). Test: `approval_checklist_test.go` (SQLite thật),
-  `checklist_config_test.go`, `QAChecklistDialog.test.tsx`, walk `qa-passed`, `qa-failed`, `bugfix-ui-happy`. Chưa làm: scope của fix task
-  không tự điền (chọn trong form), ảnh trước/sau không tự gắn vào checklist (người duyệt mở từ worktree). `ui-check.sh` đã chạy với Playwright
+  `checklist_config_test.go`, `QAChecklistDialog.test.tsx`, walk `qa-passed`, `qa-failed`, `bugfix-ui-happy`. Bổ sung trước PR
+  (2026-11-04): **Create fix task** điền sẵn scope từ task đang QA: `getWorkItem` trả thêm `effectiveScope` (repository, quyền, path),
+  form New task nhận các scope WRITE của task đó (test: `commands_sqlite_test.go`, `QAChecklistDialog.test.tsx`). Việc để sau (product
+  owner đồng ý): ảnh trước/sau chưa tự gắn vào checklist (người duyệt mở từ worktree); task QA gốc (không có effective scope riêng) thì
+  form để trống scope. `ui-check.sh` đã chạy với Playwright
   và Chromium thật trên Linux (lỗi tái hiện được, sau khi sửa thì đạt, script không chạm lỗi thì bị từ chối, không có ứng dụng thì báo
   ENVIRONMENT); chưa chạy trên Windows.
 
@@ -708,9 +729,16 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
   sang `docs/features/…` chưa commit, trùng khác nội dung thì dừng cả lần chép cho tới khi chọn **Overwrite**; cần READY, không có write
   lease). `02-spec.md`, `03-design.md`, `tasks.json` vẫn luôn ở repo. Docs: operator 03/04, kit README. Test: `awdocuments_sqlite_test.go`
   (SQLite và worktree thật: git bỏ qua `.aw/`, xuất, trùng, ghi đè, replay, write lease), `task_documents_sqlite_test.go`,
-  `AwDocumentsPanel.test.tsx`, `check-plan.sh` chạy tay với plan trong `.aw/`. Khác với chữ của ADR-065 mục 2: tài liệu không nằm ở
-  "thư mục tạm của attempt" mà ở `.aw/` của worktree (agent ghi được trong cwd của nó, mọi node sau đọc được); bản lưu trong aw là
-  output của `check-plan` cùng evidence, còn file trong `.aw/` mất khi release worktree — vì vậy có Export to repo.
+  `AwDocumentsPanel.test.tsx`, `check-plan.sh` chạy tay với plan trong `.aw/`.
+- **Bổ sung trước PR (product owner, 2026-11-04): không mất tài liệu khi release worktree.** aw chụp mỗi file `.aw/features/…` vào một
+  artifact ATTACHED (CANONICAL_CONTEXT: không hết hạn, không bị dọn; giá trị secret đã biết được che) khi một attempt AGENT chạy trong
+  worktree thành công, và lần nữa trong job release ngay trước khi worktree bị xóa (lỗi ở bước này thì job release thử lại, không xóa
+  worktree). Bảng `aw_document_snapshots` (migration 0065) giữ bản mới nhất theo (family, repository, đường dẫn); file không đổi thì không
+  chụp lại. Tab Workspace và `listAwDocuments` gộp file trong worktree với bản chụp của file đã mất (nhãn "aw's copy"); worktree đã release
+  thì chỉ còn bản chụp. Export to repo lấy nội dung từ worktree, hoặc từ bản chụp khi file trong worktree không còn. ADR-065 đã viết lại
+  theo thiết kế thật. Test: `awdocuments_sqlite_test.go` (chụp, không chụp lại file không đổi, đọc và xuất từ bản chụp khi file đã xóa,
+  secret bị che), `handler_sqlite_test.go` của workspacerelease (hook chạy khi worktree còn), `AwDocumentsPanel.test.tsx` (worktree đã
+  release).
 
 ---
 

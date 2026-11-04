@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Host implements ports.RunAppHost.
@@ -82,4 +83,101 @@ func (h Host) ReadLogTail(sessionID, process string, maxBytes int) (string, erro
 		return "", err
 	}
 	return string(buf[:n]), nil
+}
+
+// workerRecord names the record of the worker running a session; a process name never has a dot, so they cannot collide.
+const workerRecord = "aw.worker"
+
+// V12-30: which process holds a port, and the processes of a session, so a worker that starts again can end what a dead worker
+// left running (an orphan backend still holding 8080).
+
+// PortHolder implements ports.RunAppHost.
+func (Host) PortHolder(port int) string {
+	pid, ok := portHolder(port)
+	if !ok || pid <= 0 {
+		return ""
+	}
+	if name := processName(pid); name != "" {
+		return fmt.Sprintf("%s (pid %d)", name, pid)
+	}
+	return fmt.Sprintf("pid %d", pid)
+}
+
+func (h Host) recordPath(sessionID, name string) (string, error) {
+	if !safe.MatchString(sessionID) || !safe.MatchString(name) {
+		return "", fmt.Errorf("runapphost: invalid session %q or process %q", sessionID, name)
+	}
+	return filepath.Join(h.root, sessionID, name+".pid"), nil
+}
+
+func (h Host) record(sessionID, name string, pid int) error {
+	p, err := h.recordPath(sessionID, name)
+	if err != nil {
+		return err
+	}
+	start, ok := startTime(pid)
+	if !ok {
+		return fmt.Errorf("runapphost: cannot read the start time of pid %d", pid)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(strconv.Itoa(pid)+"\n"+start+"\n"), 0o600)
+}
+
+// running reads a record and reports whether that very process still runs.
+func running(path string) (int, bool, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false, false
+	}
+	pidText, start, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+	pid, err := strconv.Atoi(strings.TrimSpace(pidText))
+	if err != nil || pid <= 0 {
+		return 0, false, false
+	}
+	now, ok := startTime(pid)
+	return pid, true, ok && now == strings.TrimSpace(start)
+}
+
+// RecordWorker implements ports.RunAppHost.
+func (h Host) RecordWorker(sessionID string) error {
+	return h.record(sessionID, workerRecord, os.Getpid())
+}
+
+// RecordProcess implements ports.RunAppHost.
+func (h Host) RecordProcess(sessionID, process string, pid int) error {
+	return h.record(sessionID, process, pid)
+}
+
+// WorkerGone implements ports.RunAppHost.
+func (h Host) WorkerGone(sessionID string) bool {
+	p, err := h.recordPath(sessionID, workerRecord)
+	if err != nil {
+		return false
+	}
+	_, recorded, alive := running(p)
+	return recorded && !alive
+}
+
+// ReapSession implements ports.RunAppHost.
+func (h Host) ReapSession(sessionID string) []string {
+	if !safe.MatchString(sessionID) {
+		return nil
+	}
+	records, _ := filepath.Glob(filepath.Join(h.root, sessionID, "*.pid"))
+	var out []string
+	for _, rec := range records {
+		name := strings.TrimSuffix(filepath.Base(rec), ".pid")
+		if name == workerRecord {
+			continue
+		}
+		pid, recorded, alive := running(rec)
+		if !recorded || (!alive && !orphanedGroup(pid)) {
+			continue
+		}
+		killTree(pid)
+		out = append(out, fmt.Sprintf("%s (pid %d)", name, pid))
+	}
+	return out
 }

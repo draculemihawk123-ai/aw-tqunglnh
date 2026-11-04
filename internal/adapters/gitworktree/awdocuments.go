@@ -113,7 +113,7 @@ func (p *Provider) ListAwDocuments(ctx context.Context, handle ports.WorkspaceHa
 		if err != nil {
 			return nil, err
 		}
-		doc := ports.AwDocument{Path: rel, Size: int64(len(data))}
+		doc := ports.AwDocument{Path: rel, Size: int64(len(data)), Source: ports.AwDocumentFromWorktree}
 		if len(data) > maxAwDocumentBytes {
 			data, doc.Truncated = data[:maxAwDocumentBytes], true
 		}
@@ -123,14 +123,10 @@ func (p *Provider) ListAwDocuments(ctx context.Context, handle ports.WorkspaceHa
 	return out, nil
 }
 
-// ExportAwDocuments implements ports.AwDocumentStore: .aw/features/<rest> -> docs/features/<rest>, left uncommitted.
-func (p *Provider) ExportAwDocuments(ctx context.Context, handle ports.WorkspaceHandle, overwrite bool) (ports.AwDocumentsExport, error) {
+// WriteFeatureDocuments implements ports.AwDocumentStore: .aw/features/<rest> -> docs/features/<rest>, left uncommitted.
+func (p *Provider) WriteFeatureDocuments(ctx context.Context, handle ports.WorkspaceHandle, docs []ports.AwDocument, overwrite bool) (ports.AwDocumentsExport, error) {
 	result := ports.AwDocumentsExport{Exported: []string{}, Unchanged: []string{}, Conflicts: []string{}}
 	dir, err := p.awWorkspace(ctx, handle)
-	if err != nil {
-		return result, err
-	}
-	files, err := awFiles(dir)
 	if err != nil {
 		return result, err
 	}
@@ -139,12 +135,13 @@ func (p *Provider) ExportAwDocuments(ctx context.Context, handle ports.Workspace
 		data   []byte
 	}
 	var jobs []copyJob
-	for _, rel := range files {
-		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
-		if err != nil {
-			return result, err
+	for _, doc := range docs {
+		rest, ok := strings.CutPrefix(doc.Path, awFeaturesDirectory+"/")
+		if !ok || rest == "" || strings.Contains("/"+rest+"/", "/../") || doc.Truncated {
+			return result, fmt.Errorf("gitworktree: cannot export %q", doc.Path)
 		}
-		target := repoFeaturesDirectory + strings.TrimPrefix(rel, awFeaturesDirectory)
+		target := repoFeaturesDirectory + "/" + rest
+		data := []byte(doc.Content)
 		targetPath := filepath.Join(dir, filepath.FromSlash(target))
 		if info, err := os.Lstat(targetPath); err == nil {
 			if !info.Mode().IsRegular() {

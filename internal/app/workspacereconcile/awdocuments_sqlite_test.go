@@ -11,9 +11,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/awdocuments"
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -78,5 +81,43 @@ func TestAwDocuments_GitIgnoresThemAndExportCopiesThemIntoDocs(t *testing.T) {
 	}
 	if _, err := awdocuments.Export(ctx, d, runAppCommand(f, "export-3", "ExportAwDocuments"), f.projectID, string(f.rw.ID), true); !errors.Is(err, awdocuments.ErrWriterActive) {
 		t.Fatalf("export with a writer: %v", err)
+	}
+}
+
+func TestAwDocuments_AwKeepsACopyThatOutlivesTheWorktreeFile(t *testing.T) {
+	f := newRealFixture(t, "awdocs-snapshot.db")
+	ctx := context.Background()
+	dir := f.workingDirectory(t)
+	store, err := artifactstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := awdocuments.Deps{UnitOfWork: f.uow, Store: f.provider, Artifacts: store, IDs: idsource.NewSequential("snap"), Matcher: redact.NewMatcher("s3cret-token")}
+	plan := filepath.Join(dir, ".aw/features/quote/tasks/T-01/plan.md")
+	writeFile(t, plan, "## Files\nuse s3cret-token here\n")
+
+	// What the release job runs before it removes the worktree (and an agent attempt after it succeeds).
+	copied, err := awdocuments.SnapshotRepositoryWorkspace(ctx, d, string(f.rw.ID))
+	if err != nil || copied != 1 {
+		t.Fatalf("snapshot = %d, %v", copied, err)
+	}
+	if again, err := awdocuments.SnapshotRepositoryWorkspace(ctx, d, string(f.rw.ID)); err != nil || again != 0 {
+		t.Fatalf("an unchanged document is not copied again: %d, %v", again, err)
+	}
+
+	if err := os.Remove(plan); err != nil {
+		t.Fatal(err)
+	}
+	list, err := awdocuments.ListDocuments(ctx, d, f.projectID, string(f.rw.ID))
+	if err != nil || len(list.Documents) != 1 || list.Documents[0].Source != ports.AwDocumentFromSnapshot ||
+		!strings.Contains(list.Documents[0].Content, "## Files") || strings.Contains(list.Documents[0].Content, "s3cret-token") {
+		t.Fatalf("list after the file is gone = %+v, %v (aw's copy, secret redacted)", list, err)
+	}
+	result, err := awdocuments.Export(ctx, d, runAppCommand(f, "export-snap", "ExportAwDocuments"), f.projectID, string(f.rw.ID), false)
+	if err != nil || len(result.Exported) != 1 {
+		t.Fatalf("export from aw's copy = %+v, %v", result, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "docs/features/quote/tasks/T-01/plan.md")); !strings.HasPrefix(string(got), "## Files") {
+		t.Fatalf("exported plan.md = %q", got)
 	}
 }

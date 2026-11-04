@@ -75,4 +75,14 @@ type RunAppHost interface {
 	OpenLog(sessionID, process string) (io.WriteCloser, error)
 	// ReadLogTail returns the last bytes of a process's log (empty when there is none).
 	ReadLogTail(sessionID, process string, maxBytes int) (string, error)
+	// PortHolder names the process listening on the port ("java (pid 4120)"), or "" when it cannot tell. It only reports.
+	PortHolder(port int) string
+	// RecordWorker records this process (pid and start time) as the worker running the session.
+	RecordWorker(sessionID string) error
+	// RecordProcess records a started process of the session (pid and start time).
+	RecordProcess(sessionID, process string, pid int) error
+	// WorkerGone reports whether the session's recorded worker process no longer runs (false when none was recorded).
+	WorkerGone(sessionID string) bool
+	// ReapSession ends every recorded process tree of the session that still runs (same pid and start time) and names them.
+	ReapSession(sessionID string) []string
 }

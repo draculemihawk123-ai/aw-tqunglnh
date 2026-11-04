@@ -1744,10 +1744,17 @@ owner ngày 2026-11-04.
 
 **Quyết định:**
 
-1. Cờ theo project trong `aw-project.json`: **A** (mặc định, như V10: `frame.md`, `plan.md` trong `docs/features/<feature>/tasks/<task>/`
-   của repo) hoặc **B** (chỉ trong artifact của aw, xem trên giao diện). Mặc định A để project đang chạy không đổi; chochuyennha bật B.
-2. Với B: node ghi vào thư mục tạm của attempt, aw lưu thành artifact; `check-feature-docs`/`check-plan` đọc artifact; scope của task
-   không cần thư mục `docs/features/…/tasks/`. Có nút **Export to repo** để không mất tài liệu khi xóa bản cài.
+1. Cài đặt theo project (`aw project set-task-documents`, trang project, `"taskDocuments"` trong `aw-project.json`): **REPO** (mặc định,
+   như V10: `frame.md`, `plan.md` trong `docs/features/<feature>/tasks/<task>/` của repo) hoặc **AW** (chỉ trong aw). Mặc định REPO để
+   project đang chạy không đổi; chochuyennha bật AW. Thư mục được ghi vào contract của task lúc tạo task; task giữ thư mục đó.
+2. Với AW (thiết kế đã làm, V12-33): node ghi vào thư mục riêng của aw trong worktree, `.aw/features/<feature>/tasks/<task>/`. Khi tạo
+   worktree, aw thêm `/.aw/` vào `info/exclude` của repository, nên git bỏ qua thư mục này: không commit, không tính vi phạm scope, mọi
+   node sau đọc được (không dùng thư mục tạm của attempt vì node sau không đọc được). Để không mất khi worktree bị release, aw **chụp mỗi
+   file vào một artifact ATTACHED** (không hết hạn, giá trị secret đã biết được che) khi một attempt AGENT chạy trong worktree thành công
+   và ngay trước khi job release xóa worktree; giữ bản mới nhất theo (family, repository, đường dẫn). Tab Workspace hiện file trong
+   worktree và bản chụp của file đã mất (worktree đã release thì chỉ còn bản chụp). `check-plan` kiểm plan trong `.aw/` và in nội dung
+   vào output của bước. Nút **Export to repo** ghi tài liệu vào `docs/features/…` của một worktree READY (từ worktree, hoặc từ bản chụp
+   khi file đã mất), chưa commit, để commit theo đường thường.
 3. `02-spec.md`, `03-design.md`, `tasks.json` (tài liệu lâu dài của tính năng) **luôn ở trong repo**.
 
 ## 68. Baseline sau review thiết kế
@@ -1811,7 +1818,7 @@ dụng ma trận sau:
 - ADR-062 (V12-30): chạy ứng dụng của worktree trong `aw worker`, một phiên mỗi hồ sơ, tự tắt 2 giờ.
 - ADR-063 (V12-31): QA là APPROVAL có checklist; Create fix task; script Playwright trong artifact mặc định.
 - ADR-064 (V13, chuyển từ V12-32) sửa ADR-016 cho phiên từ xa qua tunnel (khuyến nghị Tailscale), phạm vi thao tác hẹp, webhook thông báo.
-- ADR-065 (V12-33): nơi lưu frame.md/plan.md chọn theo project (mặc định trong repo).
+- ADR-065 (V12-33): nơi lưu frame.md/plan.md chọn theo project (mặc định trong repo; AW: `.aw/` của worktree, git bỏ qua, aw chụp vào artifact).
 - ADR-059 (V12-26): đọc prompt của attempt AGENT bằng cách dựng lại từ ContextSnapshot (không lưu thêm), che secret, tối đa 512 KiB.
 - ADR-058 (V12-25): commit message nhiều dòng, marker là trailer cuối thân, mẫu commit message theo project (bỏ " (lần N)").
 - ADR-057 (V12-23): trang chi phí theo task/đợt/project từ số liệu provider, trần ngân sách theo WorkItem gốc; hàng đợi dừng khi vượt trần hoặc chạm hạn mức provider.
