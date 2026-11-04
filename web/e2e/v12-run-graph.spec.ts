@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { publishApprovalWorkflow, publishBlockerWorkflow } from './support/definitions';
 
 /**
@@ -68,7 +68,20 @@ async function createWorkItem(page: Page, projectId: string, title: string, vers
   return page.url().split('/tasks/')[1];
 }
 
-async function startRunWhenReady(page: Page) {
+// The worker provisions a new root WorkItem's worktree asynchronously and startWorkflowRun refuses ("the work item's workspace
+// set is not READY") until it is done; the Start Run button shows before that. Waiting for the button alone raced on the
+// slower Windows runner (CI, 2026-11-04), so wait for the workspace set itself, as full-journey.spec.ts does.
+async function waitForWorkspaceReady(request: APIRequestContext, base: string, token: string, projectId: string, workItemId: string) {
+  const headers = { 'X-Aw-Session-Token': token };
+  const detail = await (await request.get(`${base}/projects/${projectId}/work-items/${workItemId}`, { headers })).json() as { familyId: string };
+  await expect.poll(async () => {
+    const resp = await request.get(`${base}/projects/${projectId}/workspace-sets/${detail.familyId}`, { headers });
+    return resp.ok() ? (await resp.json() as { state: string }).state : 'unknown';
+  }, { timeout: 60_000, message: `workspace set of ${workItemId} never reached READY` }).toBe('READY');
+}
+
+async function startRunWhenReady(page: Page, request: APIRequestContext, base: string, token: string, projectId: string, workItemId: string) {
+  await waitForWorkspaceReady(request, base, token, projectId, workItemId);
   await expect.poll(async () => { await page.reload(); return settledCount(page.getByRole('button', { name: 'Start Run' })); }, { timeout: 45_000 }).toBeGreaterThan(0);
   await awaitMutation(page, () => page.getByRole('button', { name: 'Start Run' }).click(), /\/work-items\/[^/]+\/runs$/);
 }
@@ -95,7 +108,8 @@ test('V12 run graph: two runs merged, keyboard opens every node, banner and appr
   const projectId = await createProject(page, 'e2e-v12-graph');
   await page.getByRole('button', { name: 'Register Repository' }).click();
   const reg = page.getByRole('dialog', { name: 'Register Repository' });
-  await reg.getByLabel('Repository ID').fill('repo-v12');
+  // A retry re-registers: repository IDs are global, so each try uses its own.
+  await reg.getByLabel('Repository ID').fill(`repo-v12-${test.info().retry}`);
   await reg.locator('#field-name').fill('graph-repo');
   await reg.getByLabel('Local repository path').fill(process.env.AW_E2E_REPO_READY!);
   await reg.getByLabel('Default ref').fill('master');
@@ -109,8 +123,8 @@ test('V12 run graph: two runs merged, keyboard opens every node, banner and appr
 
   await test.step('a task with two runs: both merged in the graph and in the node history', async () => {
     const workflow = await publishBlockerWorkflow(request, base, token, projectId, 'v12', build!.id);
-    await createWorkItem(page, projectId, 'V12 two runs', workflow.versionId, 'graph-repo');
-    await startRunWhenReady(page);
+    const twoRunsId = await createWorkItem(page, projectId, 'V12 two runs', workflow.versionId, 'graph-repo');
+    await startRunWhenReady(page, request, base, token, projectId, twoRunsId);
     await expect.poll(async () => { await page.reload(); return settledCount(page.getByText('COMPLETION_POLICY_FAILED')); }, { timeout: 45_000 }).toBeGreaterThan(0);
     await page.getByRole('button', { name: 'Run Again' }).click();
     const dialog = page.getByRole('dialog', { name: 'Run Again' });
@@ -144,8 +158,8 @@ test('V12 run graph: two runs merged, keyboard opens every node, banner and appr
 
   await test.step('an approval waiting: the banner says so and the decision is taken in the gate\'s panel', async () => {
     const workflow = await publishApprovalWorkflow(request, base, token, projectId, 'v12');
-    await createWorkItem(page, projectId, 'V12 approval', workflow.versionId, 'graph-repo');
-    await startRunWhenReady(page);
+    const approvalId = await createWorkItem(page, projectId, 'V12 approval', workflow.versionId, 'graph-repo');
+    await startRunWhenReady(page, request, base, token, projectId, approvalId);
     await page.getByRole('tab', { name: 'Graph & Timeline' }).click();
     const reason = page.getByTestId('stop-reason');
     await expect.poll(async () => { await page.reload(); await page.getByRole('tab', { name: 'Graph & Timeline' }).click(); return settledCount(reason); },
