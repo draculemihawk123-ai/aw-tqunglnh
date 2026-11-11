@@ -3,11 +3,11 @@ package runtime_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -20,7 +20,7 @@ import (
 func runOneReaperPassAndClaimSuccessor(t *testing.T, options ...runtime.RecoveryReaperOption) (ports.DurableJob, error) {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "reaper-interval.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "reaper-interval.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/projection"
@@ -23,7 +23,7 @@ import (
 // just against a mental model of what that SQL should do.
 func TestApplyBatch_RealSQLite_AppliesReplaysAndPoisonsCorrectly(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-projection-consumer.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-projection-consumer.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestApplyBatch_RealSQLite_AppliesReplaysAndPoisonsCorrectly(t *testing.T) {
 // replay loop on top of.
 func TestReplayGenerationBatch_RealSQLite_BuildsShadowGenerationIndependentlyOfActive(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-projection-replay-generation.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-projection-replay-generation.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

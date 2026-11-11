@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -34,7 +34,7 @@ func command(key, typ string) ports.Command {
 func fixture(t *testing.T) (ports.UnitOfWork, secretstore.Deps) {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "secrets.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "secrets.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

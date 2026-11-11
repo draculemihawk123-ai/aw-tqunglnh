@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	appmessage "github.com/taQuangLing/agent-workflow/internal/app/message"
@@ -75,7 +75,7 @@ var errSimulatedPutFailure = errors.New("simulated ArtifactStore.Put failure (cr
 func setupSQLiteFixture(t *testing.T) (climessage.Dependencies, *flakyStore, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "message-cli-crash.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "message-cli-crash.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

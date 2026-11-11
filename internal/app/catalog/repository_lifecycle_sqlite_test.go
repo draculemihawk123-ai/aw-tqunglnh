@@ -7,11 +7,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -30,7 +30,7 @@ type lifecycleFixture struct {
 func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-repository-lifecycle.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-repository-lifecycle.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -14,12 +14,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
@@ -83,7 +83,7 @@ func mustGetRunDetail(t *testing.T, uow ports.UnitOfWork, runID string) runtime.
 // history. The ids the detail returns are the ids the real commands accept.
 func TestGetRunDetail_SQLite_ApprovalAndWait_DiscoverableThroughLifecycle(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-rundetail-decisions.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-rundetail-decisions.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestGetRunDetail_SQLite_ApprovalAndWait_DiscoverableThroughLifecycle(t *tes
 // both keys, so every pre-V6-06E response stays byte-identical.
 func TestGetRunDetail_SQLite_NoDecisionNodes_OmitsBothArrays(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-rundetail-nodecisions.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-rundetail-nodecisions.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -331,7 +331,7 @@ func approvalsAndWaitsChainDocument() workflow.WorkflowDocument {
 // omit-when-empty requestedEvidenceKinds.
 func TestGetRunDetail_SQLite_ApprovalsAndWaits_ListedInActivationOrder(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-rundetail-decisions-order.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-rundetail-decisions-order.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

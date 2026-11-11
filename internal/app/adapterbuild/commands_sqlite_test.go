@@ -3,11 +3,11 @@ package adapterbuild_test
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/adapterbuild"
 )
 
@@ -22,7 +22,7 @@ import (
 // differently-nonced) phantom token that never actually got stored.
 func TestProbeAdapterBuild_ConcurrentSameKey_AllCallersGetIdenticalToken(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-adapterbuild-probe-concurrent.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-adapterbuild-probe-concurrent.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestProbeAdapterBuild_ConcurrentSameKey_AllCallersGetIdenticalToken(t *test
 // once per racing writer.
 func TestRegisterAdapterBuild_ConcurrentSameKey_ExactlyOneBuildOneEvent(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-adapterbuild-register-concurrent.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-adapterbuild-register-concurrent.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestRegisterAdapterBuild_ConcurrentSameKey_ExactlyOneBuildOneEvent(t *testi
 // re-probe, it would fail loudly instead of succeeding.
 func TestRegisterAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-adapterbuild-register-crash.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-adapterbuild-register-crash.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestRegisterAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck(t *testi
 // committed must replay the exact original candidate.
 func TestProbeAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-adapterbuild-probe-crash.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-adapterbuild-probe-crash.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

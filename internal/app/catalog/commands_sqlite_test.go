@@ -3,12 +3,12 @@ package catalog_test
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -25,7 +25,7 @@ import (
 // underlying writes one at a time.
 func TestCreateProject_ConcurrentDistinctRequests_NoDuplicateOrLostProject(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-catalog-create-project-concurrent.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-catalog-create-project-concurrent.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestCreateProject_ConcurrentDistinctRequests_NoDuplicateOrLostProject(t *te
 // not merely asserted by reading its doc comment.
 func TestCreateProject_ConcurrentSameIdempotencyKey_ExactlyOneProjectPersists(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-catalog-create-project-race.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-catalog-create-project-race.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestCreateProject_ConcurrentSameIdempotencyKey_ExactlyOneProjectPersists(t 
 // commit's exact ProjectID without touching storage again.
 func TestCreateProject_ReplayAfterCommit_SimulatesCallerNeverSawFirstAck(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-catalog-create-project-crash-replay.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-catalog-create-project-crash-replay.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestCreateProject_ReplayAfterCommit_SimulatesCallerNeverSawFirstAck(t *test
 // one at a time.
 func TestRegisterRepository_ConcurrentRegistration_NoDuplicateOrLostJob(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-catalog-command-concurrent.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-catalog-command-concurrent.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

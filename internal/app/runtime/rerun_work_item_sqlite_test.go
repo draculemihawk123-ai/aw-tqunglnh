@@ -3,7 +3,6 @@ package runtime_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -64,7 +64,7 @@ const rerunRequiredEvidenceKind = "TEST_RESULT"
 func newRerunSQLiteWithCompletion(t *testing.T, withCompletion bool) *rerunSQLite {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "agentkit-rerun-work-item.db")
+	dbPath := sqlitetest.MigratedPath(t, "agentkit-rerun-work-item.db")
 	store, err := sqlite.Open(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/clicompose"
 )
 
@@ -41,7 +42,9 @@ func newAWInstall(t *testing.T) *awInstall {
 	if err := os.MkdirAll(artifactRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return &awInstall{t: t, db: filepath.Join(dir, "aw.db"), artifactRoot: artifactRoot, workRoot: filepath.Join(dir, "workspaces")}
+	// The database starts pre-migrated (sqlitetest): these tests are about the CLI, not about migrating; a fresh database
+	// costs ~4 s under -race. Opening a brand-new --db stays covered by serve_test.go.
+	return &awInstall{t: t, db: sqlitetest.MigratedPath(t, "aw.db"), artifactRoot: artifactRoot, workRoot: filepath.Join(dir, "workspaces")}
 }
 
 // aw runs one invocation with the installation's global options prepended,

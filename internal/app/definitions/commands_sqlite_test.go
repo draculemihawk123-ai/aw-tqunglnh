@@ -3,12 +3,12 @@ package definitions_test
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
@@ -28,7 +28,7 @@ import (
 // fake.ErrNestedTransaction) to be a meaningful proof of the property.
 func TestPublishDefinitionVersion_ConcurrentPublish_NoDuplicateVersionOrHash(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-definitions-command-concurrent.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-definitions-command-concurrent.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestPublishDefinitionVersion_ConcurrentPublish_NoDuplicateVersionOrHash(t *
 // CompiledSnapshotHash), never one row per writer.
 func TestPublishDefinitionVersion_ConcurrentPublish_SameContent_DedupesToOneVersion(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-definitions-command-concurrent-dedup.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-definitions-command-concurrent-dedup.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
@@ -86,7 +87,7 @@ func newTestEnv(t *testing.T, cfg config.Config, isolation ports.IsolationEnforc
 // leaves it out, which is what newTestEnv does).
 func newTestEnvWithProbe(t *testing.T, cfg config.Config, isolation ports.IsolationEnforcementChecker, withSafeSettings bool, probe appdoctor.ProviderProbe) *testEnv {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "doctor-http.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "doctor-http.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

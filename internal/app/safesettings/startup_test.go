@@ -3,11 +3,11 @@ package safesettings
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/safesettings"
@@ -152,7 +152,7 @@ func TestResolveEffective_DurationField(t *testing.T) {
 // opens DB, then applies allowed precedence" contract: the database is
 // already open (sqlite.Open, below) before either resolution happens.
 func TestStartupSequencing_CurrentProcessUnchangedThenRestartAppliesUnmasked(t *testing.T) {
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "startup-sequencing.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "startup-sequencing.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

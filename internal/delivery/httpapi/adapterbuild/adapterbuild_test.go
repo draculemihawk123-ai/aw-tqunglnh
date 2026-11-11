@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
@@ -48,7 +49,7 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "adapterbuild-http.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "adapterbuild-http.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

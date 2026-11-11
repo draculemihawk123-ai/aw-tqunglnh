@@ -11,11 +11,11 @@ package workspace_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/work"
@@ -32,7 +32,7 @@ type releaseTestEnv struct {
 
 func newReleaseTestEnv(t *testing.T) *releaseTestEnv {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "workspace-cli.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "workspace-cli.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

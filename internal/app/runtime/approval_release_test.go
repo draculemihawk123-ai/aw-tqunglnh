@@ -3,11 +3,11 @@ package runtime_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
@@ -55,7 +55,7 @@ func newReleaseFixture(t *testing.T, release *workflow.ApprovalReleaseConfig) *r
 func newGateFixture(t *testing.T, document workflow.WorkflowDocument) *releaseFixture {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "release.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "release.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

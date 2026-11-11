@@ -12,6 +12,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/work"
@@ -68,7 +69,7 @@ func newExecuteFixture(t *testing.T) *executeFixture {
 		t.Fatalf("WorkingDirectory: %v", err)
 	}
 
-	store, err := sqlite.Open(ctx, filepath.Join(root, "test.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "test.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

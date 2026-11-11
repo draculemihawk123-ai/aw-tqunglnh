@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -17,7 +18,7 @@ import (
 
 func newReceiptTestStore(t *testing.T) (*sqlite.Store, ports.UnitOfWork) {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "httpapi-receipt.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "httpapi-receipt.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
