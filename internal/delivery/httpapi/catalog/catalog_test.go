@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
@@ -42,7 +42,7 @@ func newTestHandler(t *testing.T) (http.Handler, ports.UnitOfWork) {
 // newTestHandlerWithProber is newTestHandler with a repository prober wired for the pre-registration check (V11-12).
 func newTestHandlerWithProber(t *testing.T, prober ports.RepositoryProber) (http.Handler, ports.UnitOfWork) {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "httpapi-catalog.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "httpapi-catalog.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

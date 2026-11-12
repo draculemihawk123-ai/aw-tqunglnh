@@ -3,11 +3,11 @@ package runtime_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
@@ -48,8 +48,14 @@ func releaseDocument(release *workflow.ApprovalReleaseConfig) workflow.WorkflowD
 
 func newReleaseFixture(t *testing.T, release *workflow.ApprovalReleaseConfig) *releaseFixture {
 	t.Helper()
+	return newGateFixture(t, releaseDocument(release))
+}
+
+// newGateFixture starts a run over document (start -> gate -> ...) and stops at the gate's approval request.
+func newGateFixture(t *testing.T, document workflow.WorkflowDocument) *releaseFixture {
+	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "release.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "release.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -58,7 +64,7 @@ func newReleaseFixture(t *testing.T, release *workflow.ApprovalReleaseConfig) *r
 	ids := idsource.NewSequential("id")
 
 	root := readyFixtureSQLite(t, uow, ids, "project-1", "repo-1")
-	version := publishWorkflowVersionDocument(t, uow, "project-1", "wf-def-1", "wf-v-1", releaseDocument(release))
+	version := publishWorkflowVersionDocument(t, uow, "project-1", "wf-def-1", "wf-v-1", document)
 	start, err := runtime.StartWorkflowRun(ctx, uow, ids,
 		testCommand("idem-start-1", "hash-a", ports.ProjectScope("project-1"), "StartWorkflowRun"),
 		runtime.StartWorkflowRunRequest{ProjectID: "project-1", WorkItemID: root.WorkItemID, WorkflowVersionID: string(version.ID())})

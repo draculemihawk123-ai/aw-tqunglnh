@@ -53,7 +53,7 @@ func usageErrorf(format string, args ...any) error {
 // cli.UsageError — mirrors every sibling leaf package's own identical
 // helper.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return err
 		}

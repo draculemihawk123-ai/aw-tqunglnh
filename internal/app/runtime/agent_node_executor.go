@@ -360,10 +360,26 @@ func (e *AgentNodeExecutor) classify(
 		// only spend the attempt budget (both attempts failed in seconds in the
 		// B0/B1 bench). The provider's own words, with the reset time, are in the
 		// attempt's PROVIDER_REPORTED_FAILURE diagnostic (V9-20).
+		//
+		// V12-03 (ADR-046): the attempt no longer FAILS. It ends BLOCKED, the NodeRun waits behind a
+		// PROVIDER_QUOTA_EXCEEDED blocker and the same node runs again once the limit resets (read from the
+		// provider's words when they name a time), so the run is not lost and the rerun does not restart at START.
 		if agentResult.TerminationReason == ports.TerminationProviderQuotaExceeded {
+			result := ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonProviderQuotaExceeded,
+				BlockedDetail: e.matcher.String(agentResult.ProviderMessage),
+			}
+			if resetAt, ok := ParseQuotaReset(agentResult.ProviderMessage, e.clk.Now()); ok {
+				result.ResumeAt = &resetAt
+			}
+			return result, nil
+		}
+		// V12-04 (ADR-047): the provider CLI is not signed in. The run does not fail either; the node waits BLOCKED until the
+		// operator signs in again and retries it (no automatic resume: nothing tells aw when that happened).
+		if agentResult.TerminationReason == ports.TerminationProviderLoginRequired {
 			return ports.NodeExecutionResult{
-				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
-				ErrorCode: errorcode.CodeProviderQuotaExceeded,
+				State: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonProviderLoginRequired,
+				BlockedDetail: e.matcher.String(agentResult.ProviderMessage),
 			}, nil
 		}
 		// The provider itself reported a determinate non-success (row 2):

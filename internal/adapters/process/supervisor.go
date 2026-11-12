@@ -110,7 +110,7 @@ func (s *Supervisor) Run(
 	command.Stdout = stdoutBound
 	command.Stderr = stderrBound
 	tree := newProcessTree()
-	tree.configure(command)
+	tree.configure(command, spec.KillWithParent)
 	defer tree.close()
 
 	proc := newActiveProcess()
@@ -126,6 +126,9 @@ func (s *Supervisor) Run(
 			setCancellationResult(&result, deadline.Err())
 		}
 		return result, fmt.Errorf("start executable %q: %w", spec.Executable, err)
+	}
+	if spec.OnStarted != nil && command.Process != nil {
+		spec.OnStarted(command.Process.Pid)
 	}
 	if bindErr := tree.bind(command); bindErr != nil {
 		// Best-effort: this run degrades to direct single-process

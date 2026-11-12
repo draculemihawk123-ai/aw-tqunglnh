@@ -19,12 +19,14 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -57,7 +59,7 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "message-http.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "message-http.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -541,7 +543,7 @@ func TestAppendMessage_FreeTextLookingLikeApproval_NeverMutatesWorkItemState(t *
 	if err != nil {
 		t.Fatalf("GetWorkItem (after): %v", err)
 	}
-	if before != after {
+	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("WorkItem changed after a plain-text message that merely SAYS \"approve\": before=%+v after=%+v — a message must never itself be a control signal", before, after)
 	}
 }

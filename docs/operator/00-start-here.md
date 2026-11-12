@@ -37,9 +37,12 @@ evidence. It is not a multi-tenant SaaS product — one `aw` installation serves
   an in-browser terminal emulator. See [06-source-control-and-releases.md](06-source-control-and-releases.md).
 - **No multi-installation sync.** Backup/restore covers ONE local installation; it never promises to merge or
   sync two separate installations. See [08-backup-and-restore.md](08-backup-and-restore.md).
-- **No remote Git push/fetch/clone.** Every repository this installation touches is read directly off the
-  local filesystem path you register (`remoteLocator`); ReleaseSet commits land in that same local repository
-  as ordinary local commits — nothing is ever pushed to a remote (`06-source-control-and-releases.md`).
+- **Remote Git only when you ask, with your machine's own credentials.** Every repository this installation touches is
+  read directly off the local filesystem path you register (`remoteLocator`); ReleaseSet commits land in that same local
+  repository. aw talks to `origin` only when you press a button for it: **Sync with base branch** fetches the default
+  branch and fast-forwards (V12-20, ADR-055); **Push**, **Open pull request** and **Merge** push the family branch (never
+  forced, never to the base branch) and use the GitHub CLI (V12-28, ADR-060). aw never clones and keeps no token
+  (`06-source-control-and-releases.md`).
 - **No real OS-level sandbox in Alpha.** Only `OPERATOR_TRUSTED_LOCAL` isolation is available; a workflow node
   pinned to `ENFORCED_ISOLATED` fails closed rather than silently running unsandboxed — see
   [05-providers-and-isolation.md](05-providers-and-isolation.md).

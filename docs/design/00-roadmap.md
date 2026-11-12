@@ -144,7 +144,8 @@ Task tổng hợp verdict được phép chạy khi execution gate trước đó
 | V9 — Harness alignment (**ĐÃ XONG: `V9_DONE`**) | `12-v9-harness-alignment.md` | Checker sau maker, kiểm tra fail quay lại maker, prompt có ưu tiên/outcome, selector theo path, môi trường agent khai báo | Verdict V9; `v8-alpha-gate` vẫn xanh |
 | V10 — Tri thức cho kit từ ClaudeKit (**ĐÃ DUYỆT, chưa triển khai**) | `13-v10-kit-knowledge.md` | Mỗi node của workflow mẫu (BRAINSTORM, SPEC, DESIGN, FRAME, PLAN, BUILD, SYNC, REVIEW) có tri thức chắt lọc, có xuất xứ, được đo A/B | Verdict V10; không thay đổi core |
 | V11 — Sửa lỗi, được sửa core (**ĐANG SOẠN, chưa triển khai**) | `14-v11-bugfix.md` | Lỗi phát hiện khi làm và đo V10: commit ngoài aw làm lệch HEAD, hết hạn mức bị coi là lỗi thường, cạnh hết vòng sai làm run treo, CHECKER không nhận kết quả kiểm tra, cấu hình CLI không cô lập | Mỗi lỗi có test hồi quy; `go test ./...` và CI xanh |
-| V12 — Vận hành aw trên giao diện (**ĐANG SOẠN, chưa triển khai**) | `15-v12-ui-operations.md` | 33 task từ 45 bất cập khi dùng aw thật cho chochuyennha: A) lỗi làm hỏng run (commit chết im lặng, hết hạn mức, worker mồ côi, vòng simplify); B) run graph đã chốt; C) thao tác còn thiếu trên giao diện (tạo task, Needs you, diff có bình luận, hàng đợi, đồng bộ nhánh); D) việc cần ADR (push/PR, kho secret, QA) | Test hồi quy cho phần A; Playwright; product owner xác nhận trên run thật; chạy trọn một task không mở terminal |
+| V12 — Vận hành aw trên giao diện (**ĐANG SOẠN, chưa triển khai**) | `15-v12-ui-operations.md` | 33 task từ 45 bất cập khi dùng aw thật cho chochuyennha: A) lỗi làm hỏng run (commit chết im lặng, hết hạn mức, worker mồ côi, vòng simplify); B) run graph đã chốt; C) thao tác còn thiếu trên giao diện (tạo task, Needs you, diff có bình luận, hàng đợi, đồng bộ nhánh); D) việc cần ADR (push/PR, kho secret, QA); V12-32 (truy cập từ xa) đã chuyển sang V13 | Test hồi quy cho phần A; Playwright; product owner xác nhận trên run thật; chạy trọn một task không mở terminal |
+| V13 — Truy cập từ xa và màn duyệt cho điện thoại (**ĐANG SOẠN, chưa triển khai**) | `16-v13-remote-access.md` | V12-32 chuyển sang (product owner, 2026-11-04), theo ADR-064: listener riêng cho tunnel có xác thực (khuyến nghị Tailscale), ghép cặp thiết bị bằng QR với token thu hồi được, phạm vi từ xa hẹp (chỉ đọc cộng duyệt kèm commit cục bộ, Retry, Run Again, Cancel Run), màn duyệt cho điện thoại, webhook thông báo | Security matrix cho listener từ xa; product owner ghép cặp và duyệt từ điện thoại thật |
 
 V9 là version sau verdict `ALPHA_READY`, không thuộc định nghĩa Alpha ở mục 2; product owner đã duyệt
 `12-v9-harness-alignment.md` (PR #143). Đầu vào và bằng chứng: `docs/harness-engineering/15-doi-chieu-v9.md`.
@@ -154,6 +155,9 @@ triển khai.
 
 V11 là nơi sửa lỗi và **được phép sửa core engine**; file `14-v11-bugfix.md` mới chia task (13 task, V11-01 chi tiết), chưa
 triển khai.
+
+V13 nhận V12-32 (truy cập từ xa và màn duyệt cho điện thoại, ADR-064) theo quyết định của product owner ngày 2026-11-04, vì task phức
+tạp và đụng ranh giới tin cậy của ADR-016; file `16-v13-remote-access.md` chia thành V13-01 … V13-04, chưa triển khai.
 
 Không chạy song song hai version có dependency nối tiếp. Bên trong một version, mặc định vẫn làm theo
 thứ tự Task ID. Hai task chỉ được chạy song song khi file version ghi rõ `Có thể song song` và chúng

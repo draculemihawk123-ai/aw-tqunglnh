@@ -508,3 +508,37 @@ func TestCommandNodeExecutor_ProcessCancelled_ReusesV508CMutatingPath(t *testing
 		t.Fatalf("load attempt/node run: %v", err)
 	}
 }
+
+// V12-04 (UX-18, chochuyennha P2-02): a COMMAND whose process never started (a spawn error, or Windows 0xC0000142 from a worker
+// that lost its console) is a technical failure with its reason in a PROCESS_START_FAILED diagnostic, never a routed verdict.
+func TestCommandNodeExecutor_ProcessDidNotStart_RecordsWhy(t *testing.T) {
+	for name, supervisor := range map[string]*fake.ProcessSupervisor{
+		"spawn error":        {Err: errors.New("fork/exec sh.exe: The handle is invalid."), Result: ports.ProcessResult{ExitCode: -1, TreeQuiesced: true}},
+		"windows 0xC0000142": {Result: ports.ProcessResult{ExitCode: 3221225794, TreeQuiesced: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			uow, ids, store, runID, nodeRunID, attemptID, jobLease := commandFixture(t, commandFixtureOptions{})
+			executor, _, _ := newTestCommandNodeExecutor(uow, ids, store, supervisor, fake.SecretResolver{})
+			result, err := executor.Execute(context.Background(), ports.NodeExecutionRequest{
+				AttemptID: attemptID, NodeRunID: nodeRunID, RunID: runID, JobLease: jobLease,
+			})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if result.State != runtimedomain.ExecutionAttemptFailed || result.ErrorCode != errorcode.CodeProviderUnavailable || result.SelectedOutcome != "" {
+				t.Fatalf("result = %+v, want a technical FAILED/PROVIDER_UNAVAILABLE with no routed outcome", result)
+			}
+			var records []ports.AgentEventRecord
+			if err := uow.WithReadOnly(context.Background(), func(tx ports.Tx) error {
+				var err error
+				records, err = tx.AgentEvents().ListByAttemptAndKind(context.Background(), attemptID, string(ports.AgentEventDiagnostic))
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if detail := agentevents.DiagnosticMessageFromRecords(records, runtime.ProcessStartFailedDiagnosticCode); detail == "" {
+				t.Fatalf("no %s diagnostic recorded (records: %+v)", runtime.ProcessStartFailedDiagnosticCode, records)
+			}
+		})
+	}
+}

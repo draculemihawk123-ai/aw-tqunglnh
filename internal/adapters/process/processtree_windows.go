@@ -26,7 +26,7 @@ type windowsProcessTree struct {
 
 func newProcessTree() processTree { return &windowsProcessTree{} }
 
-func (t *windowsProcessTree) configure(cmd *exec.Cmd) {
+func (t *windowsProcessTree) configure(cmd *exec.Cmd, _ bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
 }
 

@@ -34,6 +34,10 @@ func writeResolveApprovalError(w http.ResponseWriter, err error) {
 	case errors.Is(err, runtime.ErrCommitNotOffered), errors.Is(err, runtime.ErrCommitRequired):
 		// V11-07: the approval node's release policy refused the decision as asked; nothing was written.
 		httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(), nil)
+	case errors.Is(err, runtime.ErrChecklistRequired), errors.Is(err, runtime.ErrChecklistNotOffered), errors.Is(err, runtime.ErrChecklistInvalid),
+		errors.Is(err, runtime.ErrChecklistOutcome):
+		// V12-31: the checklist does not fit the node or the outcome; nothing was written.
+		httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(), []httpapi.ErrorDetail{{Field: "checklist", Message: err.Error()}})
 	case errors.Is(err, releasesetcommit.ErrCommitIdentityMissing):
 		writeIdentityMissing(w, err)
 	case errors.Is(err, ports.ErrOptimisticConflict), errors.Is(err, releasesetcommit.ErrWorkspaceNotReady):

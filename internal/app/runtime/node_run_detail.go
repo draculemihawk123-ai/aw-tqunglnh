@@ -229,7 +229,11 @@ func GetNodeRunDetail(ctx context.Context, uow ports.UnitOfWork, store ports.Art
 			if err != nil {
 				return err
 			}
-			views := toApprovalRequestViews(requests, activationOrder(nodeRuns), document)
+			qa, err := loadChecklistContext(ctx, tx, run, document)
+			if err != nil {
+				return err
+			}
+			views := toApprovalRequestViews(requests, activationOrder(nodeRuns), document, qa)
 			for i := range views {
 				if views[i].NodeRunID == nodeRunID {
 					base.approval = &views[i]

@@ -252,3 +252,34 @@ func TestService_Recreate_ParksBeforeCreatingTheReplacement(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+// V12-03: PARK_ALL parks every uncommitted change, in scope too, so the next run starts from the last commit — the case of a
+// bugfix whose `fix` attempt failed half-way and whose rerun starts again at `repro` on a worktree full of half-made fixes.
+func TestService_Retry_ParkAllMovesEveryUncommittedChange(t *testing.T) {
+	f := newRerunSQLite(t)
+	f.failRun(f.mustStart("idem-start-1"))
+	service, stub := f.service(true, "docs/spec.md", "notes/stray.md")
+
+	result, err := service.Retry(f.ctx, redoCommand("idem-retry-1", "RetryWorkItem"), retryRequest(f, workitemredo.ParkAll))
+	if err != nil {
+		t.Fatalf("Retry(PARK_ALL): %v", err)
+	}
+	if want := [][]string{{"docs/spec.md", "notes/stray.md"}}; !reflect.DeepEqual(stub.parkCalls, want) {
+		t.Fatalf("parked %v, want every changed file %v", stub.parkCalls, want)
+	}
+	if result.OutOfScope != workitemredo.ParkAll || len(result.Parked) != 1 || len(stub.files) != 0 {
+		t.Fatalf("result = %+v, files left %+v", result, stub.files)
+	}
+}
+
+func TestService_Retry_ParkAllWithNothingChangedParksNothing(t *testing.T) {
+	f := newRerunSQLite(t)
+	f.failRun(f.mustStart("idem-start-1"))
+	service, stub := f.service(true)
+	if _, err := service.Retry(f.ctx, redoCommand("idem-retry-1", "RetryWorkItem"), retryRequest(f, workitemredo.ParkAll)); err != nil {
+		t.Fatalf("Retry(PARK_ALL) on a clean worktree: %v", err)
+	}
+	if len(stub.parkCalls) != 0 {
+		t.Fatalf("parked %v on a clean worktree", stub.parkCalls)
+	}
+}

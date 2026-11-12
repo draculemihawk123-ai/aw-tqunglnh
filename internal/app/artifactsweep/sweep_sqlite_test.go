@@ -3,12 +3,12 @@ package artifactsweep_test
 import (
 	"bytes"
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/artifactsweep"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -34,7 +34,7 @@ type sweepFixture struct {
 
 func newSweepFixture(t *testing.T, dbName string) *sweepFixture {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), dbName))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, dbName))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

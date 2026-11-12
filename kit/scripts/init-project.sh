@@ -5,6 +5,8 @@
 # `aw` là chương trình Windows, không hiểu đường dẫn /c/Users/… của Git Bash.
 # Chạy lại an toàn (idempotency key suy ra từ tham số).
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 name=$1 repo_id=$2 repo_path=$3 ref=${4:-main}
@@ -18,7 +20,8 @@ key=$(printf '%s' "$name" | sha256sum | cut -c1-16)
 project_id=$(jq -n --arg n "$name" '{name: $n}' | "$AW" project create --idempotency-key "project-$key" | jq -er '.result.projectId')
 # V11-13: the idempotency key is derived from the name, so running this again with the name of an ARCHIVED project returns that same project.
 # Say so instead of quietly reusing a read-only one.
-if [ "$("$AW" project show "$project_id" | tr -d '' | jq -r '.status')" = ARCHIVED ]; then
+if [ "$("$AW" project show "$project_id" | tr -d '
+' | jq -r '.status')" = ARCHIVED ]; then
   echo "project \"$name\" ($project_id) đã được lưu trữ (chỉ đọc)." >&2
   echo "  → khôi phục: aw project restore --expected-version <version> $project_id   (xem version bằng: aw project show $project_id)" >&2
   echo "  → hoặc dùng một tên project khác." >&2

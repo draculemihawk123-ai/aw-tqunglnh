@@ -71,8 +71,14 @@ var noCrossProjectProof = []string{
 	"componentPackAssignmentsList",
 	"createProjectDefinition",
 	"createRootWorkItem",
+	"deleteRepositorySecret", // V12-29: secretstore checks the repository belongs to the project (hidden otherwise)
 	"diffProjectDefinitionVersions",
 	"getApprovalRelease",
+	"getAttemptPrompt",         // V12-26: ReadAttemptPrompt refuses another project's attempt itself (not found)
+	"getProjectCommitTemplate", // V12-25: a project setting (key/value), read in the project's own scope
+	"getProjectTaskDocuments",  // V12-33: as getProjectCommitTemplate
+	"getProjectCosts",          // V12-23: a read of the whole project (as listNeedsYou)
+	"getDefinitionManifest",    // V12-21: the project id selects operator configuration, not a stored entity
 	"getProjectDefinition",
 	"getProjectDefinitionVersion",
 	"getProjectionRebuildOperationStatus",
@@ -84,10 +90,13 @@ var noCrossProjectProof = []string{
 	"getNodeRunDetail",
 	"getWorkItemProjectedDetail",
 	"getWorkItemRedoPreview",
+	"getWorkItemQueue", // V12-19: resolves the project from the work item
 	"listAttemptEvents",
 	"listProjectDefinitionVersions",
 	"listProjectDefinitions",
+	"listRepositorySecrets", // V12-29: as deleteRepositorySecret
 	"listWorkItemKanban",
+	"listNeedsYou", // V12-16: a project-wide read; scope is the path's project
 	"listWorkItems",
 	"markWorkItemReady",
 	"projectComponentsList",
@@ -116,8 +125,17 @@ var noCrossProjectProof = []string{
 	"resolveWorkItemBlocker",
 	"retryBlockedActivation",
 	"retryWorkItem",
+	"runDefinitionManifest", // V12-21: as getDefinitionManifest
 	"startWorkflowRun",
 	"submitWaitSignal",
+	"setProjectCommitTemplate", // V12-25: as getProjectCommitTemplate
+	"setProjectTaskDocuments",  // V12-33: as getProjectCommitTemplate
+	"setRepositorySecrets",     // V12-29: as deleteRepositorySecret
+	"getRunAppProfile",         // V12-30: runapp checks the repository belongs to the project (hidden otherwise)
+	"setRunAppProfile",         // V12-30: as getRunAppProfile
+	"setWorkItemBudget",        // V12-23: resolves the project from the work item
+	"setWorkItemQueue",         // V12-19: resolves the project from the work item
+	"useNewCli",                // V12-05: resolves the project from the work item like recreateWorkItem
 	"validateProjectDefinitionDraft",
 	"watchProjectEvents",
 	"withdrawScopeExpansion",

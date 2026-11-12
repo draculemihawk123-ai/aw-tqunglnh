@@ -72,6 +72,16 @@ type Message struct {
 	// prompt. NodeRunID names the node run it is about (empty for a person's message).
 	DisplayOnly bool
 	NodeRunID   string
+	// TargetNodeKey (V12-18, ADR-053) aims the message at one node: only attempts of the node with this key get it in their prompt.
+	// Empty = every node that reads the chat. NextAttemptOnly limits it to the first attempt scheduled after it (of that node when
+	// one is set). Both are chosen when the message is appended and never change.
+	TargetNodeKey   string
+	NextAttemptOnly bool
+}
+
+// ReachesNode reports whether the message is aimed at nodeKey (or at every node).
+func (m Message) ReachesNode(nodeKey string) bool {
+	return m.TargetNodeKey == "" || m.TargetNodeKey == nodeKey
 }
 
 // NewMessage validates and constructs a Message. sequence must already be

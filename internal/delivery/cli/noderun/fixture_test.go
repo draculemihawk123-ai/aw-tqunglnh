@@ -28,11 +28,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -48,7 +48,7 @@ import (
 
 func openNodeRunCLITestStore(t *testing.T, name string) (*sqlite.Store, ports.UnitOfWork) {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, name))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

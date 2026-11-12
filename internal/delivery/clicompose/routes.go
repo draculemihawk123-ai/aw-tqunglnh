@@ -109,6 +109,9 @@ func catalogRoutes() []Route {
 	deps := func(d *Deps) catalog.Dependencies {
 		return catalog.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now, Prober: d.RepositoryProber}
 	}
+	runAppDeps := func(d *Deps) catalog.RunAppDependencies {
+		return catalog.RunAppDependencies{Dependencies: deps(d), Host: d.RunAppHost}
+	}
 	return []Route{
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectList(ctx, deps(d), a, s.Stdout, s.Stderr)
@@ -122,6 +125,19 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectRename(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "rename"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectCommitTemplate(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "commit-template"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectSetCommitTemplate(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "set-commit-template"),
+		// V12-33 (ADR-065): where the kit's per-task documents live.
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectTaskDocuments(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "task-documents"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectSetTaskDocuments(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "set-task-documents"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectArchive(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "archive"),
@@ -155,6 +171,32 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryCheck(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "check"),
+		// V12-29 (ADR-061): the repository secret store.
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositorySecretList(ctx, catalog.SecretDependencies{Dependencies: deps(d), Keys: d.SecretKeys}, a, s.Stdout, s.Stderr)
+		}, "repository", "secret", "list"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositorySecretSet(ctx, catalog.SecretDependencies{Dependencies: deps(d), Keys: d.SecretKeys}, a, s.Stdin, s.Stdout, s.Stderr)
+		}, "repository", "secret", "set"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositorySecretDelete(ctx, catalog.SecretDependencies{Dependencies: deps(d), Keys: d.SecretKeys}, a, s.Stdout, s.Stderr)
+		}, "repository", "secret", "delete"),
+		// V12-30 (ADR-062): the Run app profile and sessions.
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryRunAppShow(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "run-app", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryRunAppSet(ctx, runAppDeps(d), a, s.Stdin, s.Stdout, s.Stderr)
+		}, "repository", "run-app", "set"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryWorkspaceRunAppStatus(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "run-app", "status"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryWorkspaceRunAppStart(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "run-app", "start"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryWorkspaceRunAppStop(ctx, runAppDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "run-app", "stop"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryReadinessShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "readiness", "show"),
@@ -189,6 +231,12 @@ func definitionRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return definitions.RunDefinitionList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "definition", "list"),
+		route(0, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return definitions.RunDefinitionManifestStatus(ctx, definitions.ManifestDependencies{NewPublisher: d.NewManifestPublisher}, a, s.Stdout, s.Stderr)
+		}, "definition", "manifest-status"),
+		route(0, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return definitions.RunDefinitionManifestRun(ctx, definitions.ManifestDependencies{NewPublisher: d.NewManifestPublisher}, a, s.Stdout, s.Stderr)
+		}, "definition", "manifest-run"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return definitions.RunDefinitionCreate(ctx, deps(d), a, s.Stdin, s.Stdout, s.Stderr)
 		}, "definition", "create"),
@@ -251,7 +299,7 @@ func workItemRoutes() []Route {
 		if d.WorkspaceReader != nil {
 			service.Inspection = appworkspaceinspection.New(d.UoW, d.WorkspaceReader)
 		}
-		return redo.Dependencies{UoW: d.UoW, Service: service, Now: d.Now}
+		return redo.Dependencies{UoW: d.UoW, Service: service, Now: d.Now, Agents: d.Agents}
 	}
 	return []Route{
 		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -263,6 +311,18 @@ func workItemRoutes() []Route {
 		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return redo.Preview(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "redo-preview"),
+		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured|NeedAgents, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.UseNewCLI(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "use-new-cli"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Queue(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "queue"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Budget(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "budget"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.QueueShow(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "queue-show"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workitem.RunWorkItemList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "list"),
@@ -333,6 +393,12 @@ func runRoutes() []Route {
 		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return run.Diagnostics(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "run", "diagnostics"),
+		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return run.NeedsYou(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "run", "needs-you"),
+		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return run.Costs(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "run", "costs"),
 		route(NeedUoW|NeedIsolation|NeedAgents, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return noderun.RetryBlocked(ctx, noderun.Dependencies{
 				UOW: d.UoW, IDs: d.ids(), Isolation: d.Isolation, Agents: d.Agents,
@@ -344,6 +410,9 @@ func runRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return noderun.Events(ctx, noderun.Dependencies{UOW: d.UoW, Matcher: d.Matcher, Sleep: d.Sleep}, a, s.Stdout, s.Stderr)
 		}, "node-run", "events"),
+		route(NeedUoW|NeedArtifactStore, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return noderun.Prompt(ctx, noderun.Dependencies{UOW: d.UoW, ArtifactStore: d.ArtifactStore, Matcher: d.Matcher}, a, s.Stdout, s.Stderr)
+		}, "node-run", "prompt"),
 	}
 }
 
@@ -459,7 +528,7 @@ func workspaceRoutes() []Route {
 	deps := func(d *Deps) workspace.Dependencies {
 		return workspace.Dependencies{
 			UOW: d.UoW, IDs: d.ids(), Authority: workapp.NewEligibilityAuthority(d.UoW),
-			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now,
+			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now, Forge: d.ForgeClient, Artifacts: d.ArtifactStore,
 		}
 	}
 	const needs = NeedUoW | NeedWorkspace
@@ -488,6 +557,31 @@ func workspaceRoutes() []Route {
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceAdoptHead(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "adopt-head"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceSyncBase(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "sync-base"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceBaseStatus(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "base-status"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceRemote(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "remote"),
+		// V12-33 (ADR-065)
+		route(needs|NeedArtifactStore, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceAwDocumentsList(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "aw-documents", "list"),
+		route(needs|NeedArtifactStore, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceAwDocumentsExport(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "aw-documents", "export"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspacePush(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "push"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspacePullRequest(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "pull-request"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceMerge(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "merge"),
 	}
 }
 

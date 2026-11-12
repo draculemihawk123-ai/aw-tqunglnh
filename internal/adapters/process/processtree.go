@@ -20,7 +20,7 @@ type processTree interface {
 	// configure mutates cmd before Start so the OS groups this child (and
 	// anything it spawns) for later termination. Never fails: it only sets
 	// fields on cmd: no syscall happens yet.
-	configure(cmd *exec.Cmd)
+	configure(cmd *exec.Cmd, killWithParent bool)
 	// bind captures whatever a platform needs once the process is actually
 	// running (Windows: assigning it to a Job Object; a no-op on Unix,
 	// where configure's Setpgid already did all the work at fork time). A

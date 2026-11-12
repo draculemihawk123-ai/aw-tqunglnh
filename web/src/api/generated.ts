@@ -148,6 +148,8 @@ export interface AppendMessageRequest {
   contentType: string;
   sensitivity?: string;
   pinned?: boolean;
+  targetNodeKey?: string;
+  nextAttemptOnly?: boolean;
 }
 
 export interface AppendMessageResponse {
@@ -309,6 +311,42 @@ export function createRootWorkItem(projectId: string, body: CreateRootWorkItemRe
   return request<CreateRootWorkItemResponse>("POST", `/projects/${projectId}/work-items`, body, opts);
 }
 
+export interface CreateWorkspacePullRequestRequest {
+  title: string;
+  body?: string;
+  draft?: boolean;
+}
+
+export interface CreateWorkspacePullRequestResponse {
+  number: number;
+  url: string;
+  state: string;
+  draft: boolean;
+  headSha: string;
+  base: string;
+  head: string;
+  title: string;
+  mergeable?: string;
+  checks: unknown[];
+  mergedAt?: string | null;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request (scope: PROJECT)
+export function createWorkspacePullRequest(projectId: string, repositoryWorkspaceId: string, body: CreateWorkspacePullRequestRequest, opts: RequestOptions = {}): Promise<CreateWorkspacePullRequestResponse> {
+  return request<CreateWorkspacePullRequestResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/pull-request`, body, opts);
+}
+
+export interface DeleteRepositorySecretResponse {
+  repositoryId: string;
+  names: string[];
+  removed?: boolean;
+}
+
+// POST /projects/{projectId}/repositories/{repositoryId}/secrets/{name}/delete (scope: PROJECT)
+export function deleteRepositorySecret(projectId: string, repositoryId: string, name: string, body: unknown, opts: RequestOptions = {}): Promise<DeleteRepositorySecretResponse> {
+  return request<DeleteRepositorySecretResponse>("POST", `/projects/${projectId}/repositories/${repositoryId}/secrets/${name}/delete`, body, opts);
+}
+
 export interface DiffDefinitionVersionsResponse {
   a: unknown;
   b: unknown;
@@ -345,6 +383,22 @@ export function doctor(opts: RequestOptions = {}): Promise<DoctorResponse> {
   return request<DoctorResponse>("GET", "/doctor", undefined, opts);
 }
 
+export interface ExportAwDocumentsRequest {
+  overwrite?: boolean;
+}
+
+export interface ExportAwDocumentsResponse {
+  repositoryWorkspaceId: string;
+  exported: string[];
+  unchanged: string[];
+  conflicts: string[];
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents/export (scope: PROJECT)
+export function exportAwDocuments(projectId: string, repositoryWorkspaceId: string, body: ExportAwDocumentsRequest, opts: RequestOptions = {}): Promise<ExportAwDocumentsResponse> {
+  return request<ExportAwDocumentsResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/aw-documents/export`, body, opts);
+}
+
 export interface GetAdapterBuildResponse {
   id: string;
   providerKey: string;
@@ -374,6 +428,22 @@ export interface GetApprovalReleaseResponse {
 // GET /runs/{runId}/approval-requests/{approvalRequestId}/release (scope: PROJECT)
 export function getApprovalRelease(runId: string, approvalRequestId: string, opts: RequestOptions = {}): Promise<GetApprovalReleaseResponse> {
   return request<GetApprovalReleaseResponse>("GET", `/runs/${runId}/approval-requests/${approvalRequestId}/release`, undefined, opts);
+}
+
+export interface GetAttemptPromptResponse {
+  attemptId: string;
+  nodeRunId: string;
+  runId: string;
+  nodeKey: string;
+  contextSnapshotId: string;
+  prompt: string;
+  bytes: number;
+  truncated?: boolean;
+}
+
+// GET /projects/{projectId}/execution-attempts/{attemptId}/prompt (scope: PROJECT)
+export function getAttemptPrompt(projectId: string, attemptId: string, opts: RequestOptions = {}): Promise<GetAttemptPromptResponse> {
+  return request<GetAttemptPromptResponse>("GET", `/projects/${projectId}/execution-attempts/${attemptId}/prompt`, undefined, opts);
 }
 
 export interface GetContextSnapshotResponse {
@@ -409,6 +479,19 @@ export interface GetDefinitionResponse {
 // GET /definitions/{kind}/{id} (scope: INSTALLATION)
 export function getDefinition(kind: string, id: string, opts: RequestOptions = {}): Promise<GetDefinitionResponse> {
   return request<GetDefinitionResponse>("GET", `/definitions/${kind}/${id}`, undefined, opts);
+}
+
+export interface GetDefinitionManifestResponse {
+  projectId: string;
+  configured: boolean;
+  manifestPath?: string;
+  scriptPath?: string;
+  lastRun?: unknown | null;
+}
+
+// GET /projects/{projectId}/definition-manifest (scope: PROJECT)
+export function getDefinitionManifest(projectId: string, opts: RequestOptions = {}): Promise<GetDefinitionManifestResponse> {
+  return request<GetDefinitionManifestResponse>("GET", `/projects/${projectId}/definition-manifest`, undefined, opts);
 }
 
 export interface GetDefinitionVersionResponse {
@@ -515,6 +598,30 @@ export function getNodeRunDetail(nodeRunId: string, opts: RequestOptions = {}): 
   return request<GetNodeRunDetailResponse>("GET", `/node-runs/${nodeRunId}`, undefined, opts);
 }
 
+export interface GetProjectCommitTemplateResponse {
+  projectId: string;
+  template: string;
+  default: string;
+  version?: number;
+}
+
+// GET /projects/{id}/commit-template (scope: PROJECT)
+export function getProjectCommitTemplate(id: string, opts: RequestOptions = {}): Promise<GetProjectCommitTemplateResponse> {
+  return request<GetProjectCommitTemplateResponse>("GET", `/projects/${id}/commit-template`, undefined, opts);
+}
+
+export interface GetProjectCostsResponse {
+  projectId: string;
+  usage: unknown;
+  batches: unknown[];
+  providerLimits: unknown[];
+}
+
+// GET /projects/{projectId}/costs (scope: PROJECT)
+export function getProjectCosts(projectId: string, opts: RequestOptions = {}): Promise<GetProjectCostsResponse> {
+  return request<GetProjectCostsResponse>("GET", `/projects/${projectId}/costs`, undefined, opts);
+}
+
 export interface GetProjectDefinitionResponse {
   id: string;
   kind: unknown;
@@ -548,6 +655,18 @@ export interface GetProjectDefinitionVersionResponse {
 // GET /projects/{projectId}/definitions/versions/{versionId} (scope: PROJECT)
 export function getProjectDefinitionVersion(projectId: string, versionId: string, opts: RequestOptions = {}): Promise<GetProjectDefinitionVersionResponse> {
   return request<GetProjectDefinitionVersionResponse>("GET", `/projects/${projectId}/definitions/versions/${versionId}`, undefined, opts);
+}
+
+export interface GetProjectTaskDocumentsResponse {
+  projectId: string;
+  location: string;
+  directoryPattern: string;
+  version?: number;
+}
+
+// GET /projects/{id}/task-documents (scope: PROJECT)
+export function getProjectTaskDocuments(id: string, opts: RequestOptions = {}): Promise<GetProjectTaskDocumentsResponse> {
+  return request<GetProjectTaskDocumentsResponse>("GET", `/projects/${id}/task-documents`, undefined, opts);
 }
 
 export interface GetProjectionRebuildOperationStatusResponse {
@@ -608,6 +727,7 @@ export interface GetReleaseSetLocalCommitStatusResponse {
   failureReason?: string;
   parentVcsObjectId?: string;
   resultVcsObjectId?: string;
+  failureDetail?: string;
   jobId: string;
   createdAt: string;
   completedAt?: string | null;
@@ -637,6 +757,34 @@ export interface GetRepositoryWorkspaceStateResponse {
 // GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId} (scope: PROJECT)
 export function getRepositoryWorkspaceState(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetRepositoryWorkspaceStateResponse> {
   return request<GetRepositoryWorkspaceStateResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}`, undefined, opts);
+}
+
+export interface GetRunAppProfileResponse {
+  repositoryId: string;
+  profile?: unknown | null;
+  version: number;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+// GET /projects/{projectId}/repositories/{repositoryId}/run-app (scope: PROJECT)
+export function getRunAppProfile(projectId: string, repositoryId: string, opts: RequestOptions = {}): Promise<GetRunAppProfileResponse> {
+  return request<GetRunAppProfileResponse>("GET", `/projects/${projectId}/repositories/${repositoryId}/run-app`, undefined, opts);
+}
+
+export interface GetRunAppStatusResponse {
+  repositoryWorkspaceId: string;
+  repositoryId: string;
+  workspaceState: string;
+  profile: unknown;
+  session?: unknown | null;
+  logs: unknown[];
+  startBlockers: string[];
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app (scope: PROJECT)
+export function getRunAppStatus(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetRunAppStatusResponse> {
+  return request<GetRunAppStatusResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/run-app`, undefined, opts);
 }
 
 export interface GetRunDetailResponse {
@@ -677,6 +825,7 @@ export interface GetRunDiagnosticsResponse {
   providers: unknown[];
   isolation: unknown[];
   repositoryWorkspaces: unknown[];
+  stopReason?: unknown | null;
   validActions: unknown[];
 }
 
@@ -778,6 +927,7 @@ export interface GetWorkItemResponse {
   sourceNodeRunId?: string;
   workflowVersionId?: string;
   contract?: unknown | null;
+  effectiveScope?: unknown[];
 }
 
 // GET /projects/{projectId}/work-items/{workItemId} (scope: PROJECT)
@@ -796,6 +946,18 @@ export interface GetWorkItemProjectedDetailResponse {
 // GET /work-items/{workItemId}/detail (scope: PROJECT)
 export function getWorkItemProjectedDetail(workItemId: string, opts: RequestOptions = {}): Promise<GetWorkItemProjectedDetailResponse> {
   return request<GetWorkItemProjectedDetailResponse>("GET", `/work-items/${workItemId}/detail`, undefined, opts);
+}
+
+export interface GetWorkItemQueueResponse {
+  projectId: string;
+  familyId: string;
+  entries: unknown[];
+  waiting?: string;
+}
+
+// GET /work-items/{workItemId}/queue (scope: PROJECT)
+export function getWorkItemQueue(workItemId: string, opts: RequestOptions = {}): Promise<GetWorkItemQueueResponse> {
+  return request<GetWorkItemQueueResponse>("GET", `/work-items/${workItemId}/queue`, undefined, opts);
 }
 
 export interface GetWorkItemReadinessResponse {
@@ -842,6 +1004,23 @@ export function getWorkItemRedoPreview(workItemId: string, opts: RequestOptions 
   return request<GetWorkItemRedoPreviewResponse>("GET", `/work-items/${workItemId}/redo-preview`, undefined, opts);
 }
 
+export interface GetWorkspaceBaseStatusResponse {
+  baseRef: string;
+  baseRevision: string;
+  head: string;
+  outcome?: string;
+  merged: boolean;
+  ahead: number;
+  behind: number;
+  fetched: boolean;
+  fetchProblem?: string;
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/base-status (scope: PROJECT)
+export function getWorkspaceBaseStatus(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetWorkspaceBaseStatusResponse> {
+  return request<GetWorkspaceBaseStatusResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/base-status`, undefined, opts);
+}
+
 export interface GetWorkspaceDiffResponse {
   baseRevision: unknown;
   resultRevision: unknown;
@@ -859,6 +1038,28 @@ export interface GetWorkspaceDiffResponse {
 // GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff (scope: PROJECT)
 export function getWorkspaceDiff(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetWorkspaceDiffResponse> {
   return request<GetWorkspaceDiffResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/diff`, undefined, opts);
+}
+
+export interface GetWorkspaceRemoteResponse {
+  repositoryWorkspaceId: string;
+  baseBranch: string;
+  remoteUrl?: string;
+  remoteBranch: string;
+  suggestedBranch: string;
+  pushed: boolean;
+  pushedRevision?: string;
+  head: string;
+  unapprovedCommits: string[];
+  pullRequest?: unknown | null;
+  noChecks: boolean;
+  mergeBlockers: string[];
+  mergedRevision?: string;
+  version?: number;
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/remote (scope: PROJECT)
+export function getWorkspaceRemote(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetWorkspaceRemoteResponse> {
+  return request<GetWorkspaceRemoteResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/remote`, undefined, opts);
 }
 
 export interface GetWorkspaceRepositoryLogResponse {
@@ -934,6 +1135,17 @@ export function listAttemptEvents(attemptId: string, opts: RequestOptions = {}):
   return request<ListAttemptEventsResponse>("GET", `/execution-attempts/${attemptId}/events`, undefined, opts);
 }
 
+export interface ListAwDocumentsResponse {
+  repositoryWorkspaceId: string;
+  workspaceState: string;
+  documents: unknown[];
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents (scope: PROJECT)
+export function listAwDocuments(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<ListAwDocumentsResponse> {
+  return request<ListAwDocumentsResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/aw-documents`, undefined, opts);
+}
+
 export interface ListChildWorkItemsResponse {
   items: unknown[];
 }
@@ -989,6 +1201,17 @@ export function listMessages(projectId: string, workItemId: string, opts: Reques
   return request<ListMessagesResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/messages`, undefined, opts);
 }
 
+export interface ListNeedsYouResponse {
+  projectId: string;
+  count: number;
+  items: unknown[];
+}
+
+// GET /projects/{projectId}/needs-you (scope: PROJECT)
+export function listNeedsYou(projectId: string, opts: RequestOptions = {}): Promise<ListNeedsYouResponse> {
+  return request<ListNeedsYouResponse>("GET", `/projects/${projectId}/needs-you`, undefined, opts);
+}
+
 export interface ListProjectDefinitionVersionsResponse {
   items: unknown[];
 }
@@ -1014,6 +1237,17 @@ export interface ListReleaseSetsForFamilyResponse {
 // GET /projects/{projectId}/task-families/{familyId}/release-sets (scope: PROJECT)
 export function listReleaseSetsForFamily(projectId: string, familyId: string, opts: RequestOptions = {}): Promise<ListReleaseSetsForFamilyResponse> {
   return request<ListReleaseSetsForFamilyResponse>("GET", `/projects/${projectId}/task-families/${familyId}/release-sets`, undefined, opts);
+}
+
+export interface ListRepositorySecretsResponse {
+  repositoryId: string;
+  protection: string;
+  secrets: unknown[];
+}
+
+// GET /projects/{projectId}/repositories/{repositoryId}/secrets (scope: PROJECT)
+export function listRepositorySecrets(projectId: string, repositoryId: string, opts: RequestOptions = {}): Promise<ListRepositorySecretsResponse> {
+  return request<ListRepositorySecretsResponse>("GET", `/projects/${projectId}/repositories/${repositoryId}/secrets`, undefined, opts);
 }
 
 export interface ListWorkItemKanbanResponse {
@@ -1047,6 +1281,24 @@ export interface MarkWorkItemReadyResponse {
 // POST /work-items/{workItemId}/mark-ready (scope: PROJECT)
 export function markWorkItemReady(workItemId: string, body: unknown, opts: RequestOptions = {}): Promise<MarkWorkItemReadyResponse> {
   return request<MarkWorkItemReadyResponse>("POST", `/work-items/${workItemId}/mark-ready`, body, opts);
+}
+
+export interface MergeWorkspacePullRequestRequest {
+  method?: string;
+  acknowledgeNoChecks?: boolean;
+}
+
+export interface MergeWorkspacePullRequestResponse {
+  number: number;
+  url: string;
+  method: string;
+  head: string;
+  noChecks: boolean;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request/merge (scope: PROJECT)
+export function mergeWorkspacePullRequest(projectId: string, repositoryWorkspaceId: string, body: MergeWorkspacePullRequestRequest, opts: RequestOptions = {}): Promise<MergeWorkspacePullRequestResponse> {
+  return request<MergeWorkspacePullRequestResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/pull-request/merge`, body, opts);
 }
 
 export interface ProbeAdapterBuildRequest {
@@ -1218,6 +1470,21 @@ export interface PublishProjectDefinitionVersionResponse {
 // POST /projects/{projectId}/definitions/{kind}/{id}/publish (scope: PROJECT)
 export function publishProjectDefinitionVersion(projectId: string, kind: string, id: string, body: PublishProjectDefinitionVersionRequest, opts: RequestOptions = {}): Promise<PublishProjectDefinitionVersionResponse> {
   return request<PublishProjectDefinitionVersionResponse>("POST", `/projects/${projectId}/definitions/${kind}/${id}/publish`, body, opts);
+}
+
+export interface PushWorkspaceBranchRequest {
+  remoteBranch?: string;
+}
+
+export interface PushWorkspaceBranchResponse {
+  remoteBranch: string;
+  pushed: string;
+  created: boolean;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/push (scope: PROJECT)
+export function pushWorkspaceBranch(projectId: string, repositoryWorkspaceId: string, body: PushWorkspaceBranchRequest, opts: RequestOptions = {}): Promise<PushWorkspaceBranchResponse> {
+  return request<PushWorkspaceBranchResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/push`, body, opts);
 }
 
 export interface RecreateWorkItemRequest {
@@ -1492,6 +1759,7 @@ export interface ResolveApprovalRequest {
   outcome: string;
   reason?: string;
   commit?: unknown | null;
+  checklist?: unknown[];
 }
 
 export interface ResolveApprovalResponse {
@@ -1588,6 +1856,25 @@ export function retryWorkItem(workItemId: string, body: RetryWorkItemRequest, op
   return request<RetryWorkItemResponse>("POST", `/work-items/${workItemId}/retry`, body, opts);
 }
 
+export interface RunDefinitionManifestRequest {
+  mode: string;
+}
+
+export interface RunDefinitionManifestResponse {
+  mode: string;
+  exitCode: number;
+  succeeded: boolean;
+  output: string;
+  truncated?: boolean;
+  startedAt: string;
+  durationMs: number;
+}
+
+// POST /projects/{projectId}/definition-manifest/run (scope: PROJECT)
+export function runDefinitionManifest(projectId: string, body: RunDefinitionManifestRequest, opts: RequestOptions = {}): Promise<RunDefinitionManifestResponse> {
+  return request<RunDefinitionManifestResponse>("POST", `/projects/${projectId}/definition-manifest/run`, body, opts);
+}
+
 export interface SealReleaseSetResponse {
   releaseSetId: string;
   projectId: string;
@@ -1600,6 +1887,133 @@ export interface SealReleaseSetResponse {
 // POST /projects/{projectId}/release-sets/{releaseSetId}/seal (scope: PROJECT)
 export function sealReleaseSet(projectId: string, releaseSetId: string, body: unknown, opts: RequestOptions = {}): Promise<SealReleaseSetResponse> {
   return request<SealReleaseSetResponse>("POST", `/projects/${projectId}/release-sets/${releaseSetId}/seal`, body, opts);
+}
+
+export interface SetProjectCommitTemplateRequest {
+  template: string;
+}
+
+export interface SetProjectCommitTemplateResponse {
+  projectId: string;
+  template: string;
+  default: string;
+  version?: number;
+}
+
+// POST /projects/{id}/commit-template (scope: PROJECT)
+export function setProjectCommitTemplate(id: string, body: SetProjectCommitTemplateRequest, opts: RequestOptions = {}): Promise<SetProjectCommitTemplateResponse> {
+  return request<SetProjectCommitTemplateResponse>("POST", `/projects/${id}/commit-template`, body, opts);
+}
+
+export interface SetProjectTaskDocumentsRequest {
+  location: string;
+}
+
+export interface SetProjectTaskDocumentsResponse {
+  projectId: string;
+  location: string;
+  directoryPattern: string;
+  version?: number;
+}
+
+// POST /projects/{id}/task-documents (scope: PROJECT)
+export function setProjectTaskDocuments(id: string, body: SetProjectTaskDocumentsRequest, opts: RequestOptions = {}): Promise<SetProjectTaskDocumentsResponse> {
+  return request<SetProjectTaskDocumentsResponse>("POST", `/projects/${id}/task-documents`, body, opts);
+}
+
+export interface SetRepositorySecretsRequest {
+  values?: Record<string, string>;
+  dotEnv?: string;
+}
+
+export interface SetRepositorySecretsResponse {
+  repositoryId: string;
+  names: string[];
+  removed?: boolean;
+}
+
+// POST /projects/{projectId}/repositories/{repositoryId}/secrets (scope: PROJECT)
+export function setRepositorySecrets(projectId: string, repositoryId: string, body: SetRepositorySecretsRequest, opts: RequestOptions = {}): Promise<SetRepositorySecretsResponse> {
+  return request<SetRepositorySecretsResponse>("POST", `/projects/${projectId}/repositories/${repositoryId}/secrets`, body, opts);
+}
+
+export interface SetRunAppProfileRequest {
+  profile: unknown;
+  expectedVersion: number;
+}
+
+export interface SetRunAppProfileResponse {
+  repositoryId: string;
+  profile?: unknown | null;
+  version: number;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+// POST /projects/{projectId}/repositories/{repositoryId}/run-app (scope: PROJECT)
+export function setRunAppProfile(projectId: string, repositoryId: string, body: SetRunAppProfileRequest, opts: RequestOptions = {}): Promise<SetRunAppProfileResponse> {
+  return request<SetRunAppProfileResponse>("POST", `/projects/${projectId}/repositories/${repositoryId}/run-app`, body, opts);
+}
+
+export interface SetWorkItemBudgetRequest {
+  budgetUsd?: number | null;
+}
+
+export interface SetWorkItemBudgetResponse {
+  workItemId: string;
+  budgetUsd?: number | null;
+  version?: number;
+}
+
+// POST /work-items/{workItemId}/budget (scope: PROJECT)
+export function setWorkItemBudget(workItemId: string, body: SetWorkItemBudgetRequest, opts: RequestOptions = {}): Promise<SetWorkItemBudgetResponse> {
+  return request<SetWorkItemBudgetResponse>("POST", `/work-items/${workItemId}/budget`, body, opts);
+}
+
+export interface SetWorkItemQueueRequest {
+  queued: boolean;
+  position?: number | null;
+  waitsForWorkItemId?: string;
+}
+
+export interface SetWorkItemQueueResponse {
+  workItemId: string;
+  workItemTitle: string;
+  workItemStatus: string;
+  position: number;
+  waitsForWorkItemId?: string;
+  state: string;
+  runId?: string;
+  problem?: string;
+  version: number;
+  updatedAt: string;
+}
+
+// POST /work-items/{workItemId}/queue (scope: PROJECT)
+export function setWorkItemQueue(workItemId: string, body: SetWorkItemQueueRequest, opts: RequestOptions = {}): Promise<SetWorkItemQueueResponse> {
+  return request<SetWorkItemQueueResponse>("POST", `/work-items/${workItemId}/queue`, body, opts);
+}
+
+export interface StartRunAppResponse {
+  id: string;
+  state: string;
+  active: boolean;
+  profileVersion: number;
+  requestedBy: string;
+  workerId?: string;
+  deadlineAt: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  problem?: string;
+  createdAt: string;
+  repositoryWorkspaceId: string;
+  repositoryId: string;
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/start (scope: PROJECT)
+export function startRunApp(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<StartRunAppResponse> {
+  return request<StartRunAppResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/run-app/start`, body, opts);
 }
 
 export interface StartWorkflowRunRequest {
@@ -1622,6 +2036,28 @@ export function startWorkflowRun(workItemId: string, body: StartWorkflowRunReque
   return request<StartWorkflowRunResponse>("POST", `/work-items/${workItemId}/runs`, body, opts);
 }
 
+export interface StopRunAppResponse {
+  id: string;
+  state: string;
+  active: boolean;
+  profileVersion: number;
+  requestedBy: string;
+  workerId?: string;
+  deadlineAt: string;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  problem?: string;
+  createdAt: string;
+  repositoryWorkspaceId: string;
+  repositoryId: string;
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/stop (scope: PROJECT)
+export function stopRunApp(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<StopRunAppResponse> {
+  return request<StopRunAppResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/run-app/stop`, body, opts);
+}
+
 export interface SubmitWaitSignalRequest {
   signalKey: string;
   payload?: unknown;
@@ -1640,6 +2076,42 @@ export interface SubmitWaitSignalResponse {
 // POST /runs/{runId}/wait-registrations/{waitRegistrationId}/signal (scope: PROJECT)
 export function submitWaitSignal(runId: string, waitRegistrationId: string, body: SubmitWaitSignalRequest, opts: RequestOptions = {}): Promise<SubmitWaitSignalResponse> {
   return request<SubmitWaitSignalResponse>("POST", `/runs/${runId}/wait-registrations/${waitRegistrationId}/signal`, body, opts);
+}
+
+export interface SyncWorkspaceWithBaseResponse {
+  repositoryWorkspaceId: string;
+  sync: unknown;
+  adopted?: unknown | null;
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/sync-base (scope: PROJECT)
+export function syncWorkspaceWithBase(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<SyncWorkspaceWithBaseResponse> {
+  return request<SyncWorkspaceWithBaseResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/sync-base`, body, opts);
+}
+
+export interface UseNewCliRequest {
+  nodeRunId: string;
+  redo?: boolean;
+  reason?: string;
+  outOfScope?: string;
+}
+
+export interface UseNewCliResponse {
+  previousAdapterBuildId: string;
+  adapterBuildId: string;
+  adapterBuildExisted: boolean;
+  workflowDefinitionId: string;
+  workflowVersionId: string;
+  workflowVersionNumber: number;
+  repinnedNodes: string[];
+  newWorkItemId?: string;
+  nextStep?: string;
+}
+
+// POST /work-items/{workItemId}/use-new-cli (scope: PROJECT)
+export function useNewCli(workItemId: string, body: UseNewCliRequest, opts: RequestOptions = {}): Promise<UseNewCliResponse> {
+  return request<UseNewCliResponse>("POST", `/work-items/${workItemId}/use-new-cli`, body, opts);
 }
 
 export interface ValidateDefinitionDraftRequest {

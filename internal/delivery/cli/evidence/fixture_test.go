@@ -25,6 +25,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	appartifact "github.com/taQuangLing/agent-workflow/internal/app/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
@@ -52,7 +53,7 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "evidence-cli.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "evidence-cli.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

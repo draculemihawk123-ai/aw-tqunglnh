@@ -9,3 +9,4 @@ UI draft/
 # (CI does; the local default writes to the temp directory instead).
 v6-report/
 /aw.exe
+/aw

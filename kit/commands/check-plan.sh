@@ -14,8 +14,12 @@ vi_verify="$(v 'l\341\273\207nh')|$(v 'ki\341\273\203m tra')"
 vi_risk="$(v 'r\341\273\247i ro')|$(v 'ho\303\240n t\303\241c')"
 vi_done="$(v 'ti\303\252u ch\303\255')|$(v 'ho\303\240n th\303\240nh')"
 files=$(git status --porcelain --untracked-files=all -- docs/features | sed -E 's#^.{3}##; s#^"##; s#"$##' | grep -E '/tasks/[^/]+/plan\.md$' | sort -u || true)
+# V12-33 (ADR-065): a project with taskDocuments "aw" keeps the plan in .aw/features/<feature>/tasks/<task>/plan.md, which git ignores:
+# check the most recently written one (the PLAN node just wrote it) and print it, so aw keeps it with this step's output.
+aw_plan=$(ls -t .aw/features/*/tasks/*/plan.md 2> /dev/null | head -n 1 || true)
+[ -z "$aw_plan" ] || files=$(printf '%s\n%s\n' "$files" "$aw_plan" | grep -v '^$' | sort -u)
 if [ -z "$files" ]; then
-  echo "MISSING: no new or modified docs/features/<feature>/tasks/<task>/plan.md. WHY: BUILD reads this plan. FIX: create plan.md following plan.checklist." >&2
+  echo "MISSING: no new or modified plan.md in the task documents directory (docs/features/<feature>/tasks/<task>/ or .aw/features/<feature>/tasks/<task>/, as the task contract says). WHY: BUILD reads this plan. FIX: create plan.md following plan.checklist." >&2
   exit 1
 fi
 fail=0
@@ -32,5 +36,6 @@ for plan in $files; do
   need "risks and rollback" "risk|rollback|$vi_risk" "risk or rollback"
   need "done criteria" "criteria|done|completed|$vi_done" "criteria or done"
   [ "$fail" = 0 ] && echo "OK: $plan has all six sections"
+  case $plan in .aw/*) echo "----- $plan -----"; head -c 65536 "$plan"; echo ;; esac
 done
 [ "$fail" = 0 ] || { echo "WHY: a plan with missing sections makes BUILD guess. FIX: add the sections above following plan.checklist, then finish again." >&2; exit 1; }

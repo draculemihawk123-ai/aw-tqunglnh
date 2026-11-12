@@ -25,13 +25,41 @@ func init() {
 		Path: []string{"node-run", "events"}, Scope: cli.ScopeProject,
 		AppOperation: "ListAttemptEvents", HTTPOperationID: "listAttemptEvents",
 	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"node-run", "prompt"}, Scope: cli.ScopeProject,
+		AppOperation: "ReadAttemptPrompt", HTTPOperationID: "getAttemptPrompt",
+	})
+}
+
+// Prompt implements `aw node-run prompt --project-id <p> <attemptId>` (V12-26, ADR-059): the prompt the agent attempt received.
+func Prompt(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("node-run prompt", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	projectID := cli.BindProjectFlag(fs)
+	raw := fs.Bool("raw", false, "print only the prompt document, not the JSON envelope")
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
+		return err
+	}
+	attemptID := fs.Arg(0)
+	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(*projectID) == "" {
+		return errors.New("cli: node-run prompt: --project-id and <attemptId> are required")
+	}
+	prompt, err := runtime.ReadAttemptPrompt(ctx, deps.UOW, deps.ArtifactStore, deps.Matcher, *projectID, attemptID)
+	if err != nil {
+		return err
+	}
+	if *raw {
+		_, err := io.WriteString(stdout, prompt.Prompt+"\n")
+		return err
+	}
+	return cli.EncodeQueryResult(stdout, prompt)
 }
 
 // Show implements `aw node-run show <nodeRunId>`: what the node was asked to do, what it is doing, what came of it, and why it failed.
 func Show(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("node-run show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 	nodeRunID := fs.Arg(0)
@@ -57,7 +85,7 @@ func Events(ctx context.Context, deps Dependencies, args []string, stdout, stder
 	cursor := fs.Uint64("cursor", 0, "print events after this sequence (the previous page's nextSequence)")
 	limit := fs.Int("limit", 0, "events per page (default 100, max 500)")
 	follow := fs.Bool("follow", false, "keep printing new events, one JSON object per line, until the attempt is finished")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 	attemptID := fs.Arg(0)

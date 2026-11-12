@@ -36,7 +36,7 @@ func usageErrorf(format string, args ...any) error {
 // parseFlags mirrors internal/delivery/cli/scopeexpansion's own parseFlags
 // exactly.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return err
 		}

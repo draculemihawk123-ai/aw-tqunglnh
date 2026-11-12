@@ -35,9 +35,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	u := &url.URL{Scheme: "file", Path: uriPath}
 	query := u.Query()
+	// busy_timeout comes first: the pragmas run in this order on every new connection, and switching a fresh database to WAL takes
+	// an exclusive lock, so a second process opening the same fresh database (serve and worker started together, V12-08) must
+	// already wait on that lock instead of failing at once with SQLITE_BUSY.
+	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "journal_mode(WAL)")
-	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "synchronous(FULL)")
 	// Every BeginTx call in this package writes (docs/design/02-v0-spike-verdict.md
 	// V0-11A): a plain DEFERRED transaction only takes its SHARED read lock
@@ -62,7 +65,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 
 	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
+	if err := pingUntilNotBusy(pingCtx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
@@ -129,4 +132,22 @@ func verifyDurabilityPragmas(ctx context.Context, db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// pingUntilNotBusy opens the first connection, retrying while SQLite answers SQLITE_BUSY. Switching a fresh database to WAL
+// needs an exclusive lock and SQLite reports BUSY at once, without calling the busy handler, while another process (serve
+// and worker started together, V12-08) is doing the same; that is a wait, not a failure. Any other error, or ctx running
+// out, ends the wait.
+func pingUntilNotBusy(ctx context.Context, db *sql.DB) error {
+	for {
+		err := db.PingContext(ctx)
+		if err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }

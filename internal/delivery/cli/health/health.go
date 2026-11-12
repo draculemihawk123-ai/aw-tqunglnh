@@ -139,7 +139,7 @@ func Ready(ctx context.Context, checker *httpapi.ReadinessChecker) ReadyResult {
 func RunLive(arguments []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("health live", flag.ContinueOnError)
 	jsonOutput := cli.BindJSONFlag(fs)
-	if err := fs.Parse(arguments); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, arguments)); err != nil {
 		return cli.UsageError{Err: err}
 	}
 	result := Live()
@@ -166,7 +166,7 @@ func RunLive(arguments []string, stdout io.Writer) error {
 func RunReady(ctx context.Context, deps Dependencies, arguments []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("health ready", flag.ContinueOnError)
 	jsonOutput := cli.BindJSONFlag(fs)
-	if err := fs.Parse(arguments); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, arguments)); err != nil {
 		return cli.UsageError{Err: err}
 	}
 	checker := NewReadinessChecker(deps)

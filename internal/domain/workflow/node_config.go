@@ -254,6 +254,8 @@ type ApprovalNodeConfig struct {
 	// action as the decision. nil means DISABLED, so a definition authored before V11-07 keeps
 	// the hash and behavior it had.
 	Release *ApprovalReleaseConfig `json:"release,omitempty"`
+	// Checklist (V12-31, ADR-063) makes the approval a QA checklist whose items decide the outcome. nil: a plain approval.
+	Checklist *ApprovalChecklistConfig `json:"checklist,omitempty"`
 }
 
 func (c *ApprovalNodeConfig) clone() *ApprovalNodeConfig {
@@ -264,6 +266,7 @@ func (c *ApprovalNodeConfig) clone() *ApprovalNodeConfig {
 	cloned.AuthorizedRoles = append([]string(nil), c.AuthorizedRoles...)
 	cloned.RequestedEvidenceKinds = append([]string(nil), c.RequestedEvidenceKinds...)
 	cloned.Release = c.Release.clone()
+	cloned.Checklist = c.Checklist.clone()
 	return &cloned
 }
 

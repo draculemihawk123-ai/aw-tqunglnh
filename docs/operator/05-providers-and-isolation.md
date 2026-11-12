@@ -22,6 +22,23 @@ and each subcommand's own `-h` for the exact flags; this is a genuinely differen
 `--claude-executable`/`--codex-executable` process flags above (those register the provider AT ALL; adapter
 builds are the specific, versioned capability snapshot a workflow pins to).
 
+### The provider CLI updated itself: **Use the new CLI** (V12-05)
+
+When the CLI changes (Claude updates itself), every AGENT node pinned to the old build is blocked `ADAPTER_BUILD_DRIFT`. On the
+task page the drift blocker has a **Use the new CLI** action (CLI: `aw work-item use-new-cli <workItemId> --node-run-id <nodeRunId>
+[--redo --reason <text>] [--out-of-scope KEEP|PARK|PARK_ALL]`). After your confirmation aw:
+
+1. measures the executable the node is pinned to as it is now and registers that build (`aw adapter list` shows it);
+2. publishes a new version of the run's workflow definition in which every AGENT node pinned to the old build pins the new one
+   (nothing else in the document changes);
+3. with **Then redo this task** (`--redo`), redoes the work item on that version — only when its run has finished. A run that is
+   still live keeps its old pin (aw never repins a running run): the result then says to cancel the run and use **Redo with Latest
+   Version**.
+
+A CLI that still measures exactly as the pinned build is refused (`409`, "retry the blocked node instead"). After you republish the
+project's definitions with the kit (`aw-publish.py`), its workflow is pinned the usual way again. Since V12-05 **Redo with Latest
+Version** also shows after a run was cancelled (the buttons come from `aw work-item redo-preview` when the card shows no run).
+
 ## Isolation tiers
 
 Two values (`internal/domain/policy/policy.go`):
@@ -55,6 +72,81 @@ repository's own write scope in a single attempt). Omit it entirely for a node t
 its own declared repository scope (verified: [01-quickstart.md](01-quickstart.md)'s own permission-policy
 document omits it and the run still succeeds, since the MACHINE_GATE example never touches a repository at
 all).
+
+## Repository secrets (V12-29, ADR-061)
+
+A value a repository's gates, commands or QA app need (a DB password, a storage key) belongs in the **repository secret
+store**, not in a file of the repository. Project overview → a repository's **Secrets**, or:
+
+```bash
+printf %s "$DB_PASSWORD" | aw repository secret set --project-id <p> --name CHOCHUYENNHA_DB_PASSWORD <repositoryId>
+aw repository secret set --project-id <p> --env-file backend/.env <repositoryId>      # every NAME=value, once
+aw repository secret list --project-id <p> <repositoryId>                            # names only
+aw repository secret delete --project-id <p> --name R2_KEY <repositoryId>
+```
+
+- A value is read from stdin or a file, never from the command line (argv is visible to every user of the machine), and
+  no read ever returns it: the UI and the CLI show names only. Importing a `.env` shows its names to confirm and does not
+  keep the file. A Spring application reads such a variable directly (`${CHOCHUYENNHA_DB_PASSWORD}`), so there is no
+  `.properties` import.
+- Values are encrypted (AES-256-GCM, bound to the repository and the name) under a data key kept **outside the database**,
+  protected by the operating system: Windows **DPAPI** (only this Windows user on this machine), macOS **Keychain**, Linux
+  **Secret Service** when one answers, otherwise a `secret-store.key` file (mode 0600) in `--artifact-root`. `aw serve`,
+  `aw worker` and the CLI use the same key when given the same `--artifact-root`.
+- A COMMAND's or gate's `secretRefs` are looked up in the store of its cwd repository first, then of the other repositories
+  in the node's scope, then — as before — in the worker's environment. A secret of one repository is never given to a
+  command that does not run in it. A resolved value is added to that execution's redaction, and never reaches a prompt, a
+  context snapshot, evidence or a log.
+- `--env-allowlist` still decides which inherited environment variables reach a process; store secrets are given by name,
+  in addition.
+
+## Run the application of a worktree for manual QA (V12-30, ADR-062)
+
+A repository has one **Run app profile**: the processes to start (for example a Spring backend and a Next.js frontend), each as an
+argv list — never a shell string — with the sub-directory of the worktree it runs in, its port, plain environment variables and the
+**names** of repository secrets (above), a preview URL, and an automatic stop (default 120 minutes, at most 1440). The task's
+**Workspace** tab shows a **Run app** strip: **Set up… / Profile…**, **Start**, **Stop**, **Logs**, **Open preview**.
+
+```bash
+cat > run-app.json <<'JSON'
+{"processes": [
+   {"name": "backend",  "argv": ["./mvnw", "spring-boot:run"], "dir": "backend",  "port": 8080, "secretNames": ["CHOCHUYENNHA_DB_PASSWORD"]},
+   {"name": "frontend", "argv": ["pnpm", "dev"],               "dir": "frontend", "port": 3000, "env": {"NEXT_PUBLIC_API_URL": "http://localhost:8080"}}
+ ],
+ "previewUrl": "http://localhost:3000", "stopAfterMinutes": 120}
+JSON
+aw repository run-app set --project-id <p> --file run-app.json <repositoryId>        # --expected-version <n> to replace one
+aw repository-workspace run-app start  --project-id <p> <repositoryWorkspaceId>
+aw repository-workspace run-app status --project-id <p> <repositoryWorkspaceId>     # state, log tails, why it cannot start
+aw repository-workspace run-app stop   --project-id <p> <repositoryWorkspaceId>
+```
+
+- **`aw worker` runs it** (`aw serve` only records the request; `aw up` starts both). A worker takes a requested session within two
+  seconds, checks every port is free (a port in use ends the session `FAILED: port 8080 (backend) is in use` — stop that program
+  first), resolves the secrets from the repository store, then the worker's environment, and starts each process with the worker's
+  supervisor (process group on Unix, Job Object on Windows).
+- A bare executable name (`argv[0]` without a path separator: `pnpm`, `java`) is looked up in the **worker's** `PATH`; a relative
+  path (`./mvnw`, `./mvnw.cmd`, `scripts/dev.sh`) is the worktree file under the process's `dir`, made absolute before it starts.
+  On Windows a `.cmd`/`.bat` script runs through `cmd.exe` on its own, so a Spring backend is
+  `{"argv": ["./mvnw.cmd", "spring-boot:run"], "dir": "backend"}` and a Node frontend `{"argv": ["npm.cmd", "run", "dev"], …}`.
+- A process inherits only the worker's `--env-allowlist`
+  variables, plus the profile's variables and secrets. A dev server usually needs `PATH`, `HOME` (and on Windows `SystemRoot`,
+  `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`): allow them with `--env-allowlist` (below). On Windows, give the real program
+  (`pnpm.cmd`, `mvnw.cmd`) when the name alone is not found.
+- **One application per repository at a time** (its ports are fixed): Start is refused while another worktree of the repository
+  runs it, while the worktree is not `READY`, and while an attempt holds the worktree's write lease.
+- **It stops, killing every process tree**, on Stop, at the automatic stop, when the worktree is released or quarantined, when an
+  attempt takes the write lease, when any of its processes exits (the session ends `FAILED: backend exited (code 1)`), and when the
+  worker stops.
+- **A worker killed hard** (`kill -9`, a crash): on Windows the Job Object ends the tree with the worker; on Linux each started
+  process gets `PR_SET_PDEATHSIG` and dies with the worker. Each session records the worker's and every process's pid and start time
+  under `<artifact-root>/run-app/<session>/`; the next tick of any worker that finds the recorded worker gone ends what is left of those
+  process groups (only while pid and start time still match, so a reused pid is never killed) and closes the session `FAILED`, naming
+  them. A port that is still busy at Start is reported with the program holding it: `port 8080 (backend) is in use: java (pid 4120)
+  holds it`; aw never kills a process it did not start.
+- **Logs**: one per process, under `<artifact-root>/run-app/<session>/<process>.log` (mode 0600, at most 8 MiB each — later output is
+  dropped), with every resolved secret value replaced by `[REDACTED]`. The UI and `status` show the last 16 KiB.
+- A running application keeps the profile it started with; a changed profile applies at the next Start.
 
 ## Env allowlist
 

@@ -58,3 +58,16 @@ func TestIsProviderQuotaMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestIsProviderLoginMessage(t *testing.T) {
+	for _, message := range []string{"Invalid API key · Please run /login", "OAuth token has expired. Please run /login", "Not logged in. Run codex login."} {
+		if !ports.IsProviderLoginMessage(message) {
+			t.Errorf("IsProviderLoginMessage(%q) = false", message)
+		}
+	}
+	for _, message := range []string{"You've hit your limit · resets 5pm", "No conversation found with session ID", "context limit reached"} {
+		if ports.IsProviderLoginMessage(message) {
+			t.Errorf("IsProviderLoginMessage(%q) = true", message)
+		}
+	}
+}

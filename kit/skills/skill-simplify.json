@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-simplify.json",
-    "revision": "v2",
+    "revision": "v3",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Do not over-simplify: do not switch to a \"clever\" form that is hard to read, do not merge several concerns into one function, do not remove an abstraction that helps organise the code, prefer clarity over fewer lines, do not make a transformation that makes the code harder to debug or extend. If you see nothing worth simplifying, change nothing and say so."
+   "instruction": "Do not over-simplify: do not switch to a \"clever\" form that is hard to read, do not merge several concerns into one function, do not remove an abstraction that helps organise the code, prefer clarity over fewer lines, do not make a transformation that makes the code harder to debug or extend. If you see nothing worth simplifying, change nothing, say so, and choose the outcome no_change when the workflow offers it (a human then decides whether the large diff is acceptable) instead of done."
   }
  ]
 }

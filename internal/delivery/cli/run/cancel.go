@@ -67,7 +67,7 @@ func Cancel(ctx context.Context, deps Dependencies, args []string, stdout, stder
 	fs.SetOutput(stderr)
 	principalConfigPath := cli.BindPrincipalFlag(fs)
 	reason := fs.String("reason", "", "reason for cancelling this run (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

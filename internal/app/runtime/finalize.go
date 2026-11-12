@@ -127,6 +127,11 @@ type FinalizeExecutionAttemptRequest struct {
 	// PartialOutputArtifactID (V11-11) names an ORPHAN agent-output artifact staged by a PartialOutputStager: the last words of an attempt
 	// that FAILED or TIMED_OUT. Honoured only for those two states; it becomes an AGENT_OUTPUT evidence row.
 	PartialOutputArtifactID string
+
+	// BlockedDetail and ResumeAt (V12-03) go with NextState BLOCKED and TerminationReason PROVIDER_QUOTA_EXCEEDED: the
+	// provider's words and the reset time they name (nil when unknown). Ignored otherwise.
+	BlockedDetail string
+	ResumeAt      *time.Time
 	// Evidence is populated now (V5-08B) exactly when the caller is the
 	// NodeExecutor->AgentExecutor bridge proposing a real AGENT
 	// completion — required when NextState is SUCCEEDED and the caller is
@@ -260,7 +265,12 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 	// before ever calling this function, so this is this function's own
 	// defensive, should-be-unreachable-in-practice re-check, not the
 	// primary enforcement point.
-	if req.NextState == runtimedomain.ExecutionAttemptBlocked {
+	if req.NextState == runtimedomain.ExecutionAttemptBlocked && isProviderBlockReason(req.TerminationReason) {
+		// V12-03: a provider usage limit blocks the node; it carries no scope proposal.
+		if req.RequestedScopeExpansion != nil {
+			return FinalizeExecutionAttemptResult{}, errors.New("runtime: a PROVIDER_QUOTA_EXCEEDED block carries no scope expansion")
+		}
+	} else if req.NextState == runtimedomain.ExecutionAttemptBlocked {
 		if req.TerminationReason != runtimedomain.TerminationReasonScopeExpansionRequired {
 			return FinalizeExecutionAttemptResult{}, fmt.Errorf("runtime: BLOCKED requires TerminationReason=%s, got %q", runtimedomain.TerminationReasonScopeExpansionRequired, req.TerminationReason)
 		}
@@ -369,7 +379,11 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 			}
 
 		case runtimedomain.ExecutionAttemptBlocked:
-			if err := requestScopeExpansionTx(ctx, tx, ids, req, run, &result); err != nil {
+			if isProviderBlockReason(req.TerminationReason) {
+				if err := blockForProviderQuotaTx(ctx, tx, ids, clk.Now().UTC(), req, run); err != nil {
+					return err
+				}
+			} else if err := requestScopeExpansionTx(ctx, tx, ids, req, run, &result); err != nil {
 				return err
 			}
 

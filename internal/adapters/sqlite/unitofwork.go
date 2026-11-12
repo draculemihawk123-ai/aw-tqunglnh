@@ -68,6 +68,17 @@ func (t *txAdapter) Messages() ports.MessageRepository    { return messageReposi
 func (t *txAdapter) ContextSnapshots() ports.ContextSnapshotRepository {
 	return contextSnapshotRepository{tx: t.tx}
 }
+func (t *txAdapter) Queue() ports.QueueRepository    { return queueRepository{tx: t.tx} }
+func (t *txAdapter) Budgets() ports.BudgetRepository { return budgetRepository{tx: t.tx} }
+func (t *txAdapter) ProjectSettings() ports.ProjectSettingsRepository {
+	return projectSettingsRepository{tx: t.tx}
+}
+func (t *txAdapter) Forge() ports.ForgeRepository     { return forgeRepository{tx: t.tx} }
+func (t *txAdapter) Secrets() ports.SecretsRepository { return secretsRepository{tx: t.tx} }
+func (t *txAdapter) RunApp() ports.RunAppRepository   { return runAppRepository{tx: t.tx} }
+func (t *txAdapter) AwDocuments() ports.AwDocumentSnapshotRepository {
+	return awDocumentSnapshotRepository{tx: t.tx}
+}
 func (t *txAdapter) AgentEvents() ports.AgentEventsRepository { return agentEventsRepository{tx: t.tx} }
 func (t *txAdapter) Checkpoints() ports.CheckpointsRepository {
 	return checkpointsRepository{tx: t.tx}

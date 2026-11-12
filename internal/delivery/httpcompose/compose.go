@@ -39,6 +39,7 @@ import (
 	"net/http"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
+	appawdocs "github.com/taQuangLing/agent-workflow/internal/app/awdocuments"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	appdefinitions "github.com/taQuangLing/agent-workflow/internal/app/definitions"
@@ -52,6 +53,7 @@ import (
 	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
+	httpawdocs "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/awdocuments"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
@@ -60,14 +62,17 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/eventstream"
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpkanban "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/kanban"
+	httpmanifest "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/manifest"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	httpprojectionrebuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/projectionrebuild"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	redohttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/redo"
 	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
+	httprunapp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/runapp"
 	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
 	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
+	httpsecrets "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/secrets"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 	httpworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workspaceinspection"
 )
@@ -115,6 +120,14 @@ type Dependencies struct {
 	RedoParker ports.SelectedChangeParker
 	// RepositoryProber (V11-12, ADR-043) backs the pre-registration repository check: the same read-only prober the worker runs. Nil makes the check answer UNAVAILABLE.
 	RepositoryProber ports.RepositoryProber
+	// ManifestPublisher (V12-21, ADR-056) runs the kit's publisher over the manifest the operator configured per project. Nil: none configured.
+	ManifestPublisher ports.ManifestPublisher
+	// ForgeClient (V12-28, ADR-060) is the GitHub CLI client for push/PR/merge. Nil: those routes answer UNAVAILABLE.
+	ForgeClient ports.ForgeClient
+	// SecretKeys (V12-29, ADR-061) protects the repository secret store's data key. Nil: setting a secret answers UNAVAILABLE.
+	SecretKeys ports.SecretKeyProvider
+	// RunAppHost (V12-30, ADR-062) reads the logs `aw worker` writes for a Run app session (same artifact root). Nil: no log is shown.
+	RunAppHost ports.RunAppHost
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -234,10 +247,11 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// V6-03A: Project/repository/component catalog routes.
 	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}, Prober: deps.RepositoryProber})
 	// V6-04: WorkItem/family/readiness/scope-expansion routes.
+	httpmanifest.RegisterRoutes(routes, deps.UnitOfWork, deps.ManifestPublisher)
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V11-10: run a failed task again / redo it with the newest workflow version, in one action each.
 	redohttp.RegisterRoutes(routes, redohttp.Dependencies{
-		UOW: deps.UnitOfWork, HeadAuditor: deps.WorkspaceHeadAuditor,
+		UOW: deps.UnitOfWork, HeadAuditor: deps.WorkspaceHeadAuditor, Agents: deps.Agents,
 		Service: workitemredo.Service{
 			RedoDeps: runtime.RedoDeps{
 				UnitOfWork: deps.UnitOfWork, ArtifactStore: deps.ArtifactStore, IDs: idsource.Random{}, Clock: clock.System{}, Matcher: deps.Matcher,
@@ -256,6 +270,11 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes.
 	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{}, deps.WorkspaceHeadAuditor, deps.Matcher)
+	httpapi.RegisterForgeRoutes(routes, deps.UnitOfWork, deps.WorkspaceHeadAuditor, deps.ForgeClient) // V12-28
+	httpsecrets.RegisterRoutes(routes, deps.UnitOfWork, deps.SecretKeys)                              // V12-29
+	httprunapp.RegisterRoutes(routes, deps.UnitOfWork, deps.RunAppHost)                               // V12-30
+	awDocumentStore, _ := deps.WorkspaceHeadAuditor.(ports.AwDocumentStore)
+	httpawdocs.RegisterRoutes(routes, appawdocs.Deps{UnitOfWork: deps.UnitOfWork, Store: awDocumentStore, Artifacts: deps.ArtifactStore, Matcher: deps.Matcher}) // V12-33
 	// V6-10D: bounded source/diff/repository-log inspection routes, backed
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})

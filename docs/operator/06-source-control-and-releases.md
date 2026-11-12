@@ -3,10 +3,10 @@
 ## Local-only Git — the core constraint
 
 Every repository `aw` touches is a real, local Git repository at the absolute filesystem path you registered
-(`remoteLocator` — see [01-quickstart.md](01-quickstart.md)). `aw` never pushes, fetches, or clones from a
-remote — `internal/adapters/gitworktree.Provider` (the ONE real Git adapter this codebase has) never calls any
-of those operations anywhere in its own implementation. A "release" in Agent Kit is a real, local commit
-landing in your own repository's own history — nothing more, nothing networked.
+(`remoteLocator` — see [01-quickstart.md](01-quickstart.md)). `aw` never clones. It reaches `origin` only when you ask:
+to sync a worktree with its base branch (V12-20), and to push a family branch, open its pull request and merge it
+(V12-28, below) — with the machine's own git credential helper and GitHub CLI, never a token of its own. A "release"
+in Agent Kit is first a local commit landing in your own repository's history.
 
 ## ReleaseSet lifecycle
 
@@ -64,6 +64,64 @@ aw repository-workspace reconcile --project-id <id> --expected-version <n> --ide
 aw repository-workspace adopt-head --project-id <id> --expected-version <n> --idempotency-key a-1 <id>   # see below
 aw workspace-set release --project-id <id> --expected-version <n> --idempotency-key rel-1 <workspaceSetId>
 ```
+
+### Sync with the base branch, and closing a work batch (V12-20, ADR-055)
+
+After the family's work was merged elsewhere (a PR merged on GitHub), the family branch still stands on its old commit and
+the next task would run on it. Sync brings the worktree up to date in one audited step:
+
+```bash
+aw repository-workspace base-status --project-id <id> <repositoryWorkspaceId>      # ahead / behind / merged, no fetch
+aw repository-workspace sync-base --project-id <id> --expected-version <n> <repositoryWorkspaceId>
+```
+
+`sync-base` fetches the repository's default ref (`defaultRef`, e.g. `main`) from `origin` when the repository has one
+(a failed fetch is reported in `fetchProblem`, and the decision uses the refs already there), takes the newer of the local
+branch and `origin/<branch>`, and then:
+
+- `UP_TO_DATE`: the base branch has nothing the worktree lacks — nothing changes;
+- `FAST_FORWARDED`: HEAD was an ancestor of the base branch, so the worktree is moved forward (`git merge --ff-only`) and the
+  new HEAD is recorded exactly as `adopt-head` would (the `WorkspaceHeadAdopted` event is the audit, `adopted` in the result);
+- `NEEDS_MERGE`: the branches diverged — nothing moves; merge in the worktree yourself, then `adopt-head`;
+- `DIRTY`: the worktree has uncommitted changes — nothing moves.
+
+It has `adopt-head`'s preconditions (READY, no attempt writing, `--expected-version`) and one more: HEAD must be the revision
+aw recorded, so commits made outside aw are adopted on their own first and never folded in unseen. It never merges and
+never pushes. `merged: true` means the family made commits and the base branch contains all of them; the Workspace tab
+shows it as *merged into main*, next to **Sync with base branch**.
+
+**Closing the work batch** is the workspace-set release (`aw workspace-set release`, **Release Workspace** in the UI): the
+worktrees are removed, and each worktree's `agentkit/w-…` branch is deleted when another branch or remote-tracking ref
+already contains its tip. A branch with commits no other ref has is kept.
+
+### Push, pull request and merge on GitHub (V12-28, ADR-060)
+
+The Workspace tab's **GitHub** strip (CLI: `aw repository-workspace remote|push|pull-request|merge`) takes a family branch
+to GitHub. Set up once on the machine: an `origin` remote, a git credential helper that can push to it, and the GitHub
+CLI signed in (`gh auth login`; `aw serve --gh <path>` or `AW_GH` picks another binary). aw keeps no token.
+
+```bash
+aw repository-workspace remote --project-id <p> <repositoryWorkspaceId>                  # branch, PR, checks, what blocks a merge
+aw repository-workspace push --project-id <p> [--remote-branch feature/x] <repositoryWorkspaceId>
+aw repository-workspace pull-request --project-id <p> --title "feat: …" [--draft] <repositoryWorkspaceId>
+aw repository-workspace merge --project-id <p> [--method merge|squash|rebase] [--no-ci] <repositoryWorkspaceId>
+```
+
+- **Push.** The worktree must be READY, with no attempt writing, and its HEAD the revision aw recorded. **Every commit
+  the base branch does not have must have gone through an APPROVAL gate of aw** (a commit made with an approval
+  decision); a commit made outside aw — even adopted — blocks the push. The branch name on `origin` is chosen at the
+  first push (default: the family branch `agentkit/w-…`) and cannot change afterwards. aw never pushes to the base
+  branch, never forces (a remote branch that moved is refused by git), and never pushes onto a branch that already
+  existed on `origin` without aw having created it.
+- **Pull request.** From the pushed branch to the base branch, **ready for review** by default (tick *Draft* for a draft).
+- **Merge** (through GitHub, `gh pr merge --match-head-commit`): the pull request is open, not a draft, not conflicting,
+  its head is the commit aw pushed, every commit went through an approval gate, and every check passed. A repository
+  with **no check at all** can still be merged: the confirmation then says *This pull request has no CI* and must be
+  ticked (`--no-ci`). No GitHub review is required (an author cannot approve their own pull request). The default is a
+  **merge commit**, which keeps each task's commits; squash and rebase can be chosen.
+
+Each push, pull request and merge leaves an audit event (`FamilyBranchPushed`, `PullRequestOpened`, `PullRequestMerged`:
+remote, branch, commit, URL, method, who). After the merge, **Sync with base branch** brings the worktree to the new base.
 
 ### A `QUARANTINED` worktree and how it is recovered (V9-18)
 
@@ -138,7 +196,7 @@ At an approval gate the agent's work is still **uncommitted** in the worktree (s
 dialog (and the CLI) lets you decide **and** commit in one action, without a terminal:
 
 1. In the Graph tab, choosing such an outcome opens the dialog instead of deciding at once. Tick *Commit*, choose files
-   (a box per directory is tri-state), type the message (pre-filled with the work item's title) and press the button.
+   (a box per directory is tri-state), type the message (pre-filled from the project's commit message template, below) and press the button.
 2. **The author is the machine's git identity**, never typed: aw reads `user.name` and `user.email` with `git config` inside
    each repository's worktree (a repository-local value wins over the global one) — in the `aw` process, so that process
    needs `HOME` (`USERPROFILE` on Windows) set to see the global configuration. If either is missing for a repository you
@@ -162,7 +220,7 @@ dialog (and the CLI) lets you decide **and** commit in one action, without a ter
    of that cannot be requested (a stale workspace version, a refused policy) the decision is not recorded either. The
    commit itself is the usual background job. The Graph tab shows each repository as committing → committed (with the
    commit id) or failed, and `aw approval release <runId> <approvalRequestId>` shows the same, plus the patch you reviewed.
-6. **If the commit fails after the decision** (`CHANGESET_DRIFT`, `NO_CHANGES`, `HEAD_DRIFT`, a quarantined workspace)
+6. **If the commit fails after the decision** (`CHANGESET_DRIFT`, `NO_CHANGES`, `HEAD_DRIFT`, `EXECUTION_ERROR`, a quarantined workspace)
    the run has already moved on and is not rolled back. aw opens a `RELEASE_FAILED` blocker on the work item so it shows
    on the board. Review the changes again (Workspace tab), commit with `aw release-set local-commit … --path <file>…`, then
    `aw blocker resolve`. The blocker can be resolved but never waived.
@@ -171,6 +229,25 @@ The same selection exists for a manual commit: `aw release-set local-commit … 
 [--unselected KEEP|PARK]` (HTTP: `files` and `unselected` in the body). Without `--path` the whole worktree is committed,
 exactly as before. The kit's `review-task.sh --commit "<message>" <runId> approved` decides **and** commits every changed
 file (file choice and `PARK` are in the web dialog).
+
+### Commit messages in the repository's convention (V12-25, ADR-058)
+
+A commit aw makes has the message you give it — a subject line, then an optional body — and aw adds **one trailer** at the
+end, `Release-Set-Local-Commit-Marker: sha256:…`, which ties the commit to its ReleaseSet operation (it joins your last
+paragraph when that paragraph is already trailers such as `Co-Authored-By:`, otherwise it is a paragraph of its own). The
+subject line is yours: no marker in brackets, no " (lần N)" suffix from a redone task.
+
+The message the dialog suggests comes from the project's **commit message template** (Project overview → *Commit message
+template*, or):
+
+```bash
+aw project set-commit-template --template "feat({taskId}): {title}" <projectId>   # --clear goes back to "{title}"
+aw project commit-template <projectId>
+```
+
+`{title}` is the work item's title without " (lần N)" (and without a leading `T-01: ` when the template places `{taskId}`
+itself), `{taskId}` that `T-01`, `{workItemId}` the id. A template may have a body (several lines); it cannot name another
+placeholder. A message may contain lines starting with `#` (they are kept: the commit is written verbatim).
 
 ## Read-only source/diff/log — never an interactive terminal
 
@@ -207,6 +284,10 @@ modified, added, deleted and untracked file (never ignored files) with line coun
 `changeSetDigest` over the whole set, plus a unified patch. A binary file is a name and a size, never content; a symlink is
 a name, never followed. The web UI's Workspace tab shows this view by default when the worktree has changes, and an
 approval card in the Graph tab says "N files changed, +x −y" with a link to it.
+Its **Review diff** button opens the same changes file by file, line by line: click a line to comment on it, then
+**Request changes** sends the comments to the task as your message (the maker reads it on its next attempt) and decides the
+gate's `revise` outcome (`rework` at `size-review`) with the same text as the decision's reason. Approve is off while
+comments are pending; an approval that commits still goes through the commit dialog.
 
 It is read-only (`GIT_OPTIONAL_LOCKS=0`, no `git add`, no index write, HEAD unchanged), and it is **refused with 409 while an
 attempt holds the write lease** on that repository workspace: the worktree is in flux, so wait for the attempt or cancel it.

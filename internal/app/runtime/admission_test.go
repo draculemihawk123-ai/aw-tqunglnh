@@ -705,3 +705,35 @@ func admissionPinnedBuild(t *testing.T, executablePath string, capabilities port
 	}
 	return build
 }
+
+// V12-04 (UX-16): a provider CLI that cannot be measured is blocked as ADAPTER_PROBE_FAILED — not ADAPTER_BUILD_DRIFT, which
+// would need a new build and a new workflow version — and a plain retry clears it once the CLI runs again.
+func TestAdmission_ProbeFailure_IsNotDriftAndRetriesAsIs(t *testing.T) {
+	executablePath := writeAdmissionExecutable(t, "binary-v1")
+	capabilities := ports.AgentCapabilities{
+		Provider: ports.ProviderClaude, AdapterVersion: "claude-stream-json/v1", ProtocolVersion: "claude-stream-json/v1",
+		SupportsStart: true, SupportsResume: true, SupportsCancel: true,
+	}
+	build := admissionPinnedBuild(t, executablePath, capabilities)
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{adapterBuild: &build})
+
+	// The executable cannot be read for a moment (an update in progress, an antivirus lock).
+	if err := os.Rename(executablePath, executablePath+".away"); err != nil {
+		t.Fatal(err)
+	}
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonAdapterProbeFailed, workdomain.BlockerAdapterProbeFailed)
+
+	if err := os.Rename(executablePath+".away", executablePath); err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.NewRetryBlockedActivationHandler(uow, ids, fake.IsolationEnforcementChecker{}, registry).Retry(context.Background(),
+		runtime.RetryBlockedActivationRequest{NodeRunID: nodeRunID, Actor: "operator-1", Reason: "the CLI runs again"})
+	if err != nil || !result.Retried {
+		t.Fatalf("Retry = %+v, %v; want Retried (same build, nothing changed)", result, err)
+	}
+}

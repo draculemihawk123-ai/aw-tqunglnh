@@ -37,6 +37,17 @@ import sys
 import tempfile
 import time
 
+# V12-07: Vietnamese messages must not turn into mojibake in a Windows console (CP437/CP850): print UTF-8 and switch the console.
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 sys.dont_write_bytecode = True  # không để lại __pycache__ cạnh script khi nạp aw-resource-hashes.py
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("aw_resource_hashes", os.path.join(HERE, "aw-resource-hashes.py"))
@@ -103,6 +114,8 @@ def load_manifest(path, as_kit=False, kit_override=None):
     manifest["provider"].setdefault("configIdentity", manifest["prefix"] + "claude")
     manifest["provider"].setdefault("envAllowlist", [])
     manifest.setdefault("messageBudget", None)
+    if manifest.get("taskDocuments", "repo") not in ("repo", "aw"):
+        raise ManifestError('"taskDocuments" là "repo" hoặc "aw"')
     manifest.setdefault("role", "kit" if as_kit else "project")
     manifest["_kit"] = None
     spec = manifest.pop("kit", None)
@@ -751,6 +764,13 @@ class Publisher:
             document = self.resolve_refs(workflow_template(m, workflow))
             self.validate_workflow(workflow["id"], workflow.get("name"), document)
             self.publish("WORKFLOW", workflow["id"], workflow.get("name"), document, project=True)
+
+        if m["role"] == "project" and "taskDocuments" in m:
+            # V12-33 (ADR-065): nơi ghi frame.md, plan.md của task; split-tasks.sh và giao diện đọc lại từ aw.
+            location = m["taskDocuments"]
+            self.aw.run(["project", "set-task-documents", "--location", location,
+                         "--idempotency-key", f"task-documents-{location}", self.state["projectId"]])
+            print(f"== Tài liệu của task: {location}")
 
         print("== Gán Engineering Pack cho component")
         components = self.aw.json(["component", "list", self.state["projectId"]])["components"]

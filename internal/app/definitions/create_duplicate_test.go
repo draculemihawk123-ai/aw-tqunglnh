@@ -3,10 +3,10 @@ package definitions_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
@@ -24,7 +24,7 @@ func TestCreateDefinition_ExistingID_IsTypedAlreadyExists_ReplayStillWorks(t *te
 	backends := map[string]func(t *testing.T) ports.UnitOfWork{
 		"fake": func(t *testing.T) ports.UnitOfWork { return fake.New() },
 		"sqlite": func(t *testing.T) ports.UnitOfWork {
-			store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "create-duplicate.db"))
+			store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "create-duplicate.db"))
 			if err != nil {
 				t.Fatalf("sqlite.Open: %v", err)
 			}
@@ -86,7 +86,7 @@ func TestCreateDefinition_ExistingID_IsTypedAlreadyExists_ReplayStillWorks(t *te
 // definition row.
 func TestCreateDefinition_ExistingWorkflowID_IsTypedAlreadyExists(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "create-duplicate-workflow.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "create-duplicate-workflow.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

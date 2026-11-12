@@ -50,8 +50,8 @@ func ExplainFailure(code, detail string) ExplainedFailure {
 		out.Action = "CHECK_PROVIDER"
 	case "PROVIDER_QUOTA_EXCEEDED":
 		out.Title = "The provider's usage limit was reached"
-		out.Explanation = "The provider refused the work because the account hit a session, usage or rate limit. A limit resets in hours, so aw does not retry on its own."
-		out.Suggestion = "Wait until the time the provider's message names, then Run Again."
+		out.Explanation = "The provider refused the work because the account hit a session, usage or rate limit. Since V12 the run does not fail: the node waits blocked and runs again by itself when the limit resets."
+		out.Suggestion = "Wait for the automatic resume at the time the blocker names, or retry the blocked node once the limit has reset."
 		out.Action = "RETRY_WORK_ITEM"
 	case "TIMEOUT":
 		out.Title = "The attempt ran out of time"

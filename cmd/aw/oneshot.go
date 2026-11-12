@@ -8,9 +8,13 @@ import (
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/forge/github"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/kitpublish"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/runapphost"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -39,6 +43,21 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 		// known-secrets redactor is the empty one — the same constructor
 		// serve.go feeds its session token to (see clicompose.Deps.Matcher).
 		Matcher: redact.NewMatcher(),
+	}
+	// V12-21: `definition manifest-status/manifest-run` run the kit publisher with this installation's options.
+	deps.NewManifestPublisher = func(manifests map[string]string) (ports.ManifestPublisher, error) {
+		python := os.Getenv("AW_PYTHON")
+		if python == "" {
+			python = kitpublish.DefaultPython()
+		}
+		return buildManifestRunner(manifests, python, opts.DB, opts.ArtifactRoot, opts.WorkspaceRoot, opts.ClaudeExecutable, deps.Matcher)
+	}
+	// V12-28: the machine's GitHub CLI (AW_GH picks another binary).
+	deps.ForgeClient = github.Client{Executable: os.Getenv("AW_GH")}
+	// V12-29: the same data key `aw serve` and `aw worker` use (it follows --artifact-root).
+	if strings.TrimSpace(opts.ArtifactRoot) != "" {
+		deps.SecretKeys = secretkey.New(opts.ArtifactRoot)
+		deps.RunAppHost = runapphost.New(opts.ArtifactRoot)
 	}
 	var cleanups []func()
 	cleanup := func() {

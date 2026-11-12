@@ -4,6 +4,8 @@
 # Repository đầu tiên đăng ký bằng init-project.sh. Id repository là duy nhất trên toàn bản cài. Chạy lại an toàn.
 # Trên Windows (Git Bash) truyền đường dẫn dạng C:/… (cygpath -m), như init-project.sh.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 repo_id=$1 repo_path=$2 ref=${3:-main}

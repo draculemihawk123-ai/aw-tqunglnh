@@ -42,6 +42,9 @@ func TestBlockerType_AuthorityMatrix(t *testing.T) {
 		{BlockerCapabilityRequirementUnsatisfied, false, true},
 		{BlockerWriteCapabilityOrGrantMissing, false, true},
 		{BlockerReleaseFailed, false, true},
+		{BlockerProviderQuotaExceeded, false, true}, // V12-03: resolved only by retrying the node
+		{BlockerAdapterProbeFailed, false, true},    // V12-04
+		{BlockerProviderLoginRequired, false, true}, // V12-04
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.blockerType), func(t *testing.T) {

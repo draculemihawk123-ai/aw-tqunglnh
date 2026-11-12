@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 )
@@ -17,7 +17,7 @@ import (
 func openTestQueue(t *testing.T, name string) *sqlite.Store {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), name))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

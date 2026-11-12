@@ -328,6 +328,135 @@ The HTTP route takes `"pinned": true` in the `appendMessage` body. A message is 
 changes afterwards (the chat is append-only); pinned messages count toward the budget, so pinning many large messages
 leaves less room for the rest.
 
+**Aiming a message at one node, or at the next attempt only (V12-18).** A message reaches every node that reads the
+chat by default, so a note written for `repro` ("do not change product code") also reaches `fix`. Choose who it is for
+when you append it:
+
+```bash
+aw message append <workItemId> --project-id <p> --node repro --file note.txt         # only repro's attempts
+aw message append <workItemId> --project-id <p> --next-attempt-only --file note.txt  # only the next attempt, of any node
+aw message append <workItemId> --project-id <p> --node fix --next-attempt-only --file note.txt
+```
+
+HTTP: `"targetNodeKey": "repro"` and `"nextAttemptOnly": true` in the `appendMessage` body; the web UI's Chat tab has a
+**For** list (the run's AGENT nodes) and an **only the next attempt** box. A message aimed at another node is left out of
+an attempt's snapshot entirely (it is neither included nor in `omittedMessages`). A next-attempt-only message reaches the
+first attempt scheduled after it (of `--node` when set) and no later one: "delivered" is read from the attempts' context
+snapshots, and `listMessages` reports it as `"delivered": true` (the Chat tab shows *next attempt only — delivered* or
+*— waiting*). A checker node never reads the chat, so aiming a message at one changes nothing. A node key no node has is
+accepted and reaches no prompt. Running a task again with its notes (`--carry-messages`) carries an aimed message with its
+target, and drops a next-attempt-only message that was already delivered.
+
+## Publishing from the UI (V12-21)
+
+`aw-publish.py aw-project.json` stays the way a project's definitions are published (the kit's own order, templates and
+`$ref`s), and it can now be run from the UI: start the server with `--project-manifest <projectId>=<path>/aw-project.json`
+(see [02-configuration.md](02-configuration.md)), open **Definitions → Project**, and use
+
+- **Check** — `aw-publish.py aw-project.json --check`: the manifest and the templates are checked, nothing is published;
+- **Publish…** (with a confirmation) — `aw-publish.py aw-project.json`: every definition in dependency order; an unchanged
+  one keeps its version, a changed one gets a new version, runs already started keep the versions they pinned.
+
+The output (bounded to 64 KiB, known secrets redacted) and the exit code are shown under the buttons; the definition list
+and the version diff (**Diff** between two versions) then show what changed. One run per project at a time; a run is
+stopped after 10 minutes. The same from a terminal:
+
+```bash
+aw definition manifest-status --project-id <p> --manifest aw-project.json
+aw definition manifest-run --project-id <p> --manifest aw-project.json --mode CHECK     # or PUBLISH
+```
+
+(`AW_PYTHON` picks the interpreter for the CLI; `aw-state.json` is read and written next to the manifest, as when you run
+the script there.)
+
+## Creating the tasks of a feature design (V12-22)
+
+After the DESIGN gate of `wf-feature-definition` approves `docs/features/<slug>/tasks.json`, the task page's
+**Tasks from tasks.json** creates its tasks as child tasks of that work item, replacing `split-tasks.sh` + `run-task.sh`:
+
+1. enter the feature folder (`<slug>`) and **Read tasks.json** — it is read from the recorded revision of the family's
+   repositories (or paste it, when the design is not committed yet); entries with a missing field are listed and skipped;
+2. check the preview: each task's repository and directories (its `pathScopes` plus `docs`; the other repositories are
+   read-only), the number of acceptance criteria, its lane, and the workflow — suggested by its risk (LOW → task delivery,
+   MEDIUM/HIGH → the plus variant), changeable per task;
+3. **Create**: the tasks are created in file order with exactly the title, scope and contract `split-tasks.sh` writes, made
+   READY, and — with *Queue them in this order* — put in the family queue so they run one after another. A task that fails
+   to create stops the rest (order matters); creating again reuses the same idempotency keys, so tasks already created are
+   not duplicated.
+
+## Queueing tasks of a family (V12-19)
+
+A family shares one worktree, so its tasks run one after another. Instead of starting each one when the one before is done,
+queue them:
+
+```bash
+aw work-item queue <T-01>                       # last in the family queue
+aw work-item queue <T-02>
+aw work-item queue <T-03> --waits-for <T-01>    # also wait for T-01 to be DONE
+aw work-item queue <T-02> --remove              # take a queued task out
+aw work-item queue-show <T-01>                  # the queue and what it waits for
+```
+
+HTTP: `POST /work-items/{id}/queue` with `{"queued": true, "position": 2, "waitsForWorkItemId": "..."}` (Idempotency-Key
+required), `GET /work-items/{id}/queue`. The web UI shows the queue on a task's Overview (**Add to queue**, **Remove from queue**).
+
+The worker checks the queues every 10 seconds and starts the first `QUEUED` task (lowest position) with its pinned workflow
+version, as `aw run start` would, when all of these hold:
+
+- the task the queue started before it is `DONE`;
+- no run of the family is active;
+- the task it waits for (`--waits-for`), if any, is `DONE`.
+
+A task the queue started that **failed or was cancelled pauses the queue** (`waiting` says `paused: …`): run it again (the queue
+moves on when it is `DONE`) or take the next task out. A task that cannot start (not `READY`, a baseline not admitted, …) stays
+`QUEUED` with the reason in `problem`, and the next check tries again. Only a `READY`-able work item with a pinned workflow
+version can be queued; a `DONE` or `CANCELLED` one is refused.
+
+## The project's status page (V12-24)
+
+A project's **Overview** starts with **Status**: every batch (a root work item and every task under it) with a progress bar
+(tasks done out of tasks not cancelled), how many are blocked or running, and what the batch cost; what is running now; and how
+many things wait for you. **Export report** saves the same as Markdown (`STATUS-<project>-<date>.md`): a checklist per batch with
+each task's status, running runs and blockers, then what waits for you — the file that used to be kept by hand.
+
+## Costs, budgets and provider limits (V12-23)
+
+The project's **Costs** page (CLI: `aw run costs --project-id <p>`) shows what the work cost, by task, by batch (a root work
+item and every task under it) and in all: tokens in and out and US dollars, summed over every attempt of every run. The
+figures are what the provider CLI reported (`total_cost_usd` for Claude), not a bill; an attempt that reported nothing counts
+as unknown, not as zero.
+
+A **budget** caps a batch:
+
+```bash
+aw work-item budget <rootWorkItemId> --usd 20      # or --clear
+```
+
+(HTTP: `POST /work-items/{id}/budget {"budgetUsd": 20}`, Idempotency-Key required; **Set budget** on the Costs page.) The page
+marks a batch *near budget* at 80% and *over budget* at 100%. Over budget, the family queue (V12-19) starts no more of its tasks
+(`waiting` says `paused: the batch spent …`); a run already going is not stopped. Raise or remove the budget to go on. A budget
+is set on a root work item only.
+
+**Provider usage limits.** aw does not show the remaining quota yet: the Claude CLI writes `rate_limit_event` lines into its
+stream, but aw does not read their fields (their shape has not been verified against a real CLI), so it cannot warn before a
+limit. It knows a limit once it is hit: the node is BLOCKED with `PROVIDER_QUOTA_EXCEEDED` and resumes by itself after the reset time (V12-03). While
+such a blocker is open anywhere in the installation (a provider account's limit is not per project), every family queue is
+paused, and the Costs page lists the limit with the time aw resumes.
+
+## Reading the prompt a node received (V12-26)
+
+The node panel of an AGENT node has a **Prompt** section: **Show prompt** renders the JSON document the attempt was given on the
+provider's stdin (pick the attempt when there were several). It is rendered again from the attempt's context snapshot — the
+same deterministic rendering the worker used, so it is the same bytes — with known secrets redacted and cut at 512 KiB. Reading
+it needs no more than reading the work item's evidence. From a terminal:
+
+```bash
+aw node-run prompt --project-id <p> <attemptId>          # JSON envelope (bytes, snapshot id, prompt)
+aw node-run prompt --project-id <p> --raw <attemptId>    # only the prompt document
+```
+
+A COMMAND or gate attempt has no prompt (the route answers 409).
+
 ## Setting up a repository before an agent writes — readiness profile and baseline (V9-08)
 
 Initialization is a phase of its own with evidence, not something an agent discovers by failing. A repository
@@ -590,3 +719,78 @@ and commit in one action**, give the node a `release` policy:
 
 How the commit is made, who the author is, what happens to the files you do not choose, and what happens when the
 commit fails are in [06-source-control-and-releases.md](06-source-control-and-releases.md#approve-and-commit-in-one-action).
+
+## A QA checklist approval (`approval.checklist`, V12-31, ADR-063)
+
+An `APPROVAL` node with a `checklist` is a **QA gate**: the person checks each item by hand — usually in the application the
+Workspace tab's **Run app** started — and marks it *Passed* or *Failed*, with a note (required for a failed item) and images. The
+outcome is not chosen: it **follows the items**.
+
+```json
+{"key": "qa", "type": "APPROVAL", "outcomes": ["passed", "failed"],
+ "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 1209600, "escalationOutcome": "failed",
+              "checklist": {"fromAcceptanceCriteria": true, "items": ["No error in the browser console"],
+                            "passedOutcome": "passed", "failedOutcome": "failed"}}}
+```
+
+- Items: one per acceptance criterion of the run's work item when `fromAcceptanceCriteria` is true (ids `ac-1`, `ac-2`, …), then the
+  node's own `items` (`item-1`, …). At least one source; at most 50 items.
+- `passedOutcome` (every item passed) and `failedOutcome` (any failed) are two different outcomes the node declares. The role, the
+  timeout, `escalationOutcome` and `release` work as for any approval; a timeout routes `escalationOutcome` with no checklist.
+- The decision must carry a result for **every** item and the outcome that follows from them; anything else is refused (422,
+  `checklist`) and the gate stays pending. A plain approval refuses a checklist.
+- What was decided is kept as the gate's **QA_CHECKLIST** record (items, result, note, the attached images' message ids, who and
+  when): `aw run show` (`approvalRequests[].checklist`) and the node panel's **QA checklist** section. The images are attachments of
+  the task's conversation (Chat tab).
+- In the UI: the pending approval shows **QA checklist…** instead of the outcome buttons. A failed item has **Create fix task**: New
+  task opens prefilled — kind bugfix, title and behavior from the item and its note, the item as acceptance criterion — as a child of
+  the QA task (choose its scope and workflow there).
+- CLI: `aw approval resolve --outcome failed --checklist @results.json …` with `[{"id": "ac-1", "result": "PASSED"}, {"id": "item-1",
+  "result": "FAILED", "note": "TypeError in the console"}]`; the kit's `review-task.sh` takes `CHECKLIST=results.json`, and without it
+  marks every item PASSED for the passed outcome, FAILED (note = the feedback) otherwise.
+
+The kit has **`wf-qa`** (one checklist gate from the acceptance criteria; failed ends the run FAILED through `reject`) and
+**`wf-bugfix-ui`**, for a UI without a test suite: the `repro` agent writes a browser script `.aw-qa/<name>.mjs` (Node and
+Playwright) that prints `QA-ASSERT-FAILED: …` and exits 1 while the bug is there; `ui-expect-fail` passes only when a script reports
+it, `ui-verify` after `gate1` passes only when every script passes, and `gate2` is a checklist (before and after screenshots, the fix
+tried by hand). Screenshots are written to `.aw-qa/out/expect-fail` and `.aw-qa/out/expect-pass` and listed, with their SHA-256, in
+those steps' output. Requirements, not added to the project:
+
+- Playwright installed outside the project, where node finds it: `npm i -g playwright && npx playwright install chromium`, and the
+  worker started with `NODE_PATH` (`$(npm root -g)`) in `--env-allowlist` (`PLAYWRIGHT_BROWSERS_PATH` too if you moved the
+  browsers). Missing, the step ends with `ENVIRONMENT: … cannot find the Playwright library`.
+- The application running at `AW_QA_BASE_URL` (default `http://localhost:3000`): start it with **Run app** before the run reaches
+  `ui-expect-fail`.
+- The scripts stay **out of the repository** (`.aw-qa/` is added to `.git/info/exclude`) and are kept by aw in those steps' output; a
+  project that wants them committed sets `AW_QA_SCRIPTS_IN_REPO=1` for the worker (only `.aw-qa/out/` stays excluded).
+
+## Where a task's frame.md and plan.md live (`taskDocuments`, V12-33, ADR-065)
+
+The kit's FRAME and PLAN stages write `frame.md` and `plan.md` for every task. A project chooses where:
+
+- **REPO** (the default, as in V10): `docs/features/<feature>/tasks/<task>/` in the repository, committed with the task.
+- **AW**: `.aw/features/<feature>/tasks/<task>/` in the worktree. aw lists `/.aw/` in the repository's `.git/info/exclude` when it
+  creates a worktree (or the first time a process starts in an older one), so git ignores the directory: it is never committed, never
+  a scope violation, and nothing else of the worktree changes. The Workspace tab lists the files (**Task documents in aw**) and shows
+  them; `check-plan` prints the plan into its own output, which aw keeps with the step's evidence.
+
+The feature's lasting documents — `02-spec.md`, `03-design.md`, `tasks.json` — **always stay in the repository**.
+
+```bash
+aw project set-task-documents --location aw <projectId>     # or: repo
+aw project task-documents <projectId>
+```
+
+or **Task documents** on the project page, or `"taskDocuments": "aw"` in `aw-project.json` (`aw-publish.py` sets it). The choice is
+written into each task's contract when the task is created (`split-tasks.sh`, *Create tasks* from `tasks.json`): a task keeps the
+directory it was created with.
+
+Keeping the documents: **Export to repo** on the Workspace tab (`aw repository-workspace aw-documents export --project-id <p>
+<repositoryWorkspaceId>`) copies `.aw/features/<rest>` to `docs/features/<rest>` in the worktree, uncommitted, for the normal commit.
+It needs the worktree `READY` and no attempt writing; a document that already exists there with other content stops the whole export
+(nothing is written) until you confirm **Overwrite** (`--overwrite`).
+
+aw also keeps its own copy of every `.aw/features/` file (an artifact that does not expire, known secret values redacted): after each
+successful agent attempt in the worktree, and again right before the release job removes the worktree (if that copy fails, the release
+is retried and the worktree is kept). A file the worktree no longer has is listed as **aw's copy**; a released worktree still lists its
+documents, and Export to repo (in a READY worktree) uses aw's copy for a file that is gone.

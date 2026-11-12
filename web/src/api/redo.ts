@@ -71,7 +71,8 @@ export interface ParkedSet {
   paths: string[];
 }
 
-export type OutOfScopeChoice = 'KEEP' | 'PARK';
+/** V12-03: PARK_ALL parks every uncommitted change (in scope too) so the next run starts from the last commit. */
+export type OutOfScopeChoice = 'KEEP' | 'PARK' | 'PARK_ALL';
 
 /** Plain-language explanation of a typed refusal, so a dialog never shows a bare code. */
 const REFUSAL_TEXT: Record<string, string> = {

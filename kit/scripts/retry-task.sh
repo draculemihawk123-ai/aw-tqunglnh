@@ -4,14 +4,17 @@
 # gỡ blocker của run hỏng và start run mới với đúng workflow version đã pin, trong một transaction (V11-10, ADR-041).
 # Worktree KHÔNG được reset: run mới bắt đầu từ những gì run trước để lại.
 # Cách dùng: retry-task.sh <workItemId> ["ghi chú cho agent"]
-# Biến tùy chọn: OUT_OF_SCOPE=KEEP|PARK xử lý file run trước để lại NGOÀI scope của task (bắt buộc khi có; PARK cất vào
-#                một ref Git ẩn, không xóa); WAIT_SECONDS (mặc định 2700) thời gian chờ tối đa, xem watch-run.sh.
+# Biến tùy chọn: OUT_OF_SCOPE=KEEP|PARK|PARK_ALL xử lý file run trước để lại NGOÀI scope của task (bắt buộc khi có; PARK cất vào
+#                một ref Git ẩn, không xóa; PARK_ALL cất MỌI thay đổi chưa commit, kể cả trong scope, để run sau bắt đầu từ
+#                commit cuối); WAIT_SECONDS (mặc định 2700) thời gian chờ tối đa, xem watch-run.sh.
 # Muốn chạy bằng workflow version MỚI (vừa sửa kit rồi publish lại): dùng recreate-task.sh.
 # Run mới chạy lại workflow TỪ ĐẦU (aw không chạy tiếp từ node bị hỏng); các agent thấy phần việc đã có trong
 # worktree và làm tiếp từ đó.
 # Ghi chú Windows: jq.exe in CRLF. `$(…)` của Git Bash tự bỏ CR cuối, còn `read` thì không, nên các vòng
 # `while read` lọc CR bằng tr.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 work_item=$1 note=${2:-}

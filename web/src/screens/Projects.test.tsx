@@ -15,6 +15,9 @@ vi.mock('../api/generated', async () => {
     projectRepositoriesList: vi.fn(), projectRepositoriesRegister: vi.fn(), repositoriesRetryProbe: vi.fn(),
     projectRepositoriesCheck: vi.fn(), repositoriesUpdate: vi.fn(), repositoriesDisable: vi.fn(), repositoriesDelete: vi.fn(), repositoriesOnboarding: vi.fn(),
     projectComponentsList: vi.fn(), componentPackAssignmentsList: vi.fn(), componentPackAssignmentsAssign: vi.fn(),
+    // V12-24: the status panel on the Overview
+    listWorkItemKanban: vi.fn(async () => ({ items: [] })), listNeedsYou: vi.fn(async () => ({ projectId: 'p', count: 0, items: [] })),
+    getProjectCosts: vi.fn(async () => ({ projectId: 'p', usage: { costUsd: 0 }, batches: [], providerLimits: [] })),
   };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));

@@ -12,6 +12,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -70,7 +71,7 @@ func runReleaseFixtureGit(t *testing.T, directory string, arguments ...string) s
 
 func openReleaseHandlerTestStore(t *testing.T, name string) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, name))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -140,6 +141,9 @@ func mustCreateRootWorkItemForRelease(t *testing.T, uow ports.UnitOfWork, ids id
 // release scenario to act on, mirroring workspacereconcile_test's own
 // realFixture exactly.
 type releaseRealFixture struct {
+	// beforeRelease (V12-33), when set, is the release handler's BeforeRelease hook.
+	beforeRelease func(ctx context.Context, repositoryWorkspaceID string) error
+
 	store          *sqlite.Store
 	uow            ports.UnitOfWork
 	ids            idsource.Source
@@ -284,6 +288,9 @@ func (f *releaseRealFixture) requestAndRunRelease(t *testing.T, idempotencyKey s
 	}
 
 	releaseHandler := workspacerelease.NewHandler(f.uow, f.ids, f.provider, f.store)
+	if f.beforeRelease != nil {
+		releaseHandler.WithBeforeRelease(f.beforeRelease)
+	}
 	registry := workerpool.NewRegistry()
 	registry.Register(workspacerelease.WorkspaceSetReleaseJobKind, releaseHandler)
 	pool, err := workerpool.New(f.store, registry, workerpool.Config{
@@ -458,5 +465,29 @@ func TestEndToEnd_Release_QuarantinedMidFlight_RefusesAndPreservesEvidence(t *te
 	gotSet := f.reloadWorkspaceSet(t)
 	if gotSet.State == workspace.WorkspaceSetReleased {
 		t.Fatal("workspace set reached RELEASED despite a quarantined repository workspace refusing the release")
+	}
+}
+
+// V12-33 (ADR-065): the release job runs the BeforeRelease hook (aw copies the worktree's .aw/ task documents there) while the
+// worktree still exists, once per READY repository workspace.
+func TestEndToEnd_Release_RunsTheBeforeReleaseHookWhileTheWorktreeStillExists(t *testing.T) {
+	f := newReleaseRealFixture(t, "e2e-release-hook.db")
+	dir := f.workingDirectory(t)
+	var calls []string
+	f.beforeRelease = func(_ context.Context, id string) error {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("the worktree is already gone when the hook runs: %v", err)
+		}
+		calls = append(calls, id)
+		return nil
+	}
+	if err := f.requestAndRunRelease(t, "idem-release-hook", f.reloadWorkspaceSet(t).Version); err != nil {
+		t.Fatalf("requestAndRunRelease: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != string(f.rw.ID) {
+		t.Fatalf("hook calls = %v, want [%s]", calls, f.rw.ID)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree after release: %v", err)
 	}
 }

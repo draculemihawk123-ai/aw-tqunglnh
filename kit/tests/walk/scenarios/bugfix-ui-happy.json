@@ -1,0 +1,54 @@
+{
+  "name": "wf-bugfix-ui: script trình duyệt đỏ, sửa, xanh, checklist",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-bugfix-ui",
+  "agents": {
+    "repro": [
+      "done"
+    ],
+    "fix": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "debug": [
+      "diagnosed"
+    ]
+  },
+  "commands": {
+    "uiexpectfail": [
+      "pass"
+    ],
+    "gate1": [
+      "pass"
+    ],
+    "uiverify": [
+      "fail",
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "repro:done",
+      "ui-expect-fail:passed",
+      "fix:done",
+      "gate1:passed",
+      "ui-verify:failed",
+      "debug:diagnosed",
+      "fix:done",
+      "gate1:passed",
+      "ui-verify:passed",
+      "review:approved",
+      "gate2:approved",
+      "end:-"
+    ]
+  }
+}

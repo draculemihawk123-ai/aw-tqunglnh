@@ -131,3 +131,25 @@ func TestKitWorkflowsKeepEveryEscalationEdgeOutsideItsCycle(t *testing.T) {
 		}
 	}
 }
+
+// V12-06 (ADR-049): an escalation into an APPROVAL node may stay inside the cycle — every further round waits for a human, so
+// the loop cannot run on its own. This is the size-review gate after `simplify` runs out of rounds.
+func TestValidateDocument_AcceptsAnEscalationIntoAHumanGateInsideTheCycle(t *testing.T) {
+	t.Parallel()
+
+	document := escalationDocument("review")
+	document.Nodes = append(document.Nodes, Node{
+		Key: "review", Type: NodeApproval, Outcomes: []string{"accept", "rework"},
+		Approval: &ApprovalNodeConfig{AuthorizedRoles: []string{"operator"}, TimeoutSeconds: 60, EscalationOutcome: "accept"},
+	})
+	document.Edges = append(document.Edges,
+		Edge{Key: "review-end", From: "review", Outcome: "accept", To: "end"},
+		Edge{Key: "review-build", From: "review", Outcome: "rework", To: "build"},
+	)
+	if err := ValidateDocument(document); err != nil {
+		t.Fatalf("an escalation into an APPROVAL node inside the cycle must publish: %v", err)
+	}
+	if !EscalatesToHumanGate(document.Nodes[len(document.Nodes)-1]) || EscalatesToHumanGate(document.Nodes[2]) {
+		t.Fatal("EscalatesToHumanGate must hold for APPROVAL only")
+	}
+}

@@ -165,6 +165,10 @@ func (p *Provider) Provision(ctx context.Context, spec ports.ProvisionSpec) (por
 		_, _ = p.runGit(context.Background(), repositoryPath, "worktree", "remove", workspacePath)
 		return ports.WorkspaceHandle{}, fmt.Errorf("persist workspace metadata: %w", err)
 	}
+	// V12-33 (ADR-065): the aw-private directory is ignored by git before any agent writes in the worktree.
+	if err := p.ensureAwPrivateExcluded(ctx, workspacePath); err != nil {
+		return ports.WorkspaceHandle{}, fmt.Errorf("exclude %s from git: %w", ports.AwPrivateDirectory, err)
+	}
 	if _, err := p.inspectActive(ctx, handle, metadata); err != nil {
 		return ports.WorkspaceHandle{}, err
 	}
@@ -201,7 +205,13 @@ func (p *Provider) WorkingDirectory(ctx context.Context, handle ports.WorkspaceH
 	if _, err := p.Inspect(ctx, handle); err != nil {
 		return "", err
 	}
-	return p.workspacePath(handle)
+	dir, err := p.workspacePath(handle)
+	if err != nil {
+		return "", err
+	}
+	// V12-33: a worktree provisioned before ADR-065 gets the exclusion the first time a process starts in it (best effort).
+	_ = p.ensureAwPrivateExcluded(ctx, dir)
+	return dir, nil
 }
 
 func (p *Provider) CaptureRevision(ctx context.Context, handle ports.WorkspaceHandle) (workspace.Revision, error) {
@@ -306,6 +316,7 @@ func (p *Provider) Release(ctx context.Context, handle ports.WorkspaceHandle) er
 		}
 		return fmt.Errorf("verify released workspace path: %w", err)
 	}
+	p.deleteMergedBranch(ctx, repositoryPath, metadata.BranchRef)
 	if err := p.writeReleaseTombstone(handle); err != nil {
 		return fmt.Errorf("persist workspace release tombstone: %w", err)
 	}
@@ -728,4 +739,29 @@ func validObjectID(value string) bool {
 
 func metadataEqual(left workspaceMetadata, right workspaceMetadata) bool {
 	return left == right
+}
+
+// deleteMergedBranch (V12-20, ADR-055) deletes a released workspace's branch when another branch or remote-tracking ref already
+// contains its tip (the work was merged, or the branch never got a commit of its own), so closing a work batch leaves no
+// `agentkit/w-…` branch behind. A branch whose tip no other ref contains is kept: deleting it would lose commits. Best effort:
+// the release itself never fails on it.
+func (p *Provider) deleteMergedBranch(ctx context.Context, repositoryPath, branchRef string) {
+	if branchRef == "" || !validRevisionInput(branchRef) {
+		return
+	}
+	full := "refs/heads/" + strings.TrimPrefix(branchRef, "refs/heads/")
+	tip, err := p.resolveCommit(ctx, repositoryPath, full)
+	if err != nil {
+		return
+	}
+	out, err := p.runGit(ctx, repositoryPath, "for-each-ref", "--format=%(refname)", "--contains", tip, "refs/heads", "refs/remotes")
+	if err != nil {
+		return
+	}
+	for _, ref := range strings.Fields(string(out)) {
+		if ref != full && !strings.HasSuffix(ref, "/HEAD") {
+			_, _ = p.runGit(ctx, repositoryPath, "branch", "-D", "--", strings.TrimPrefix(full, "refs/heads/"))
+			return
+		}
+	}
 }

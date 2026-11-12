@@ -105,6 +105,17 @@ type WorkItemDetail struct {
 	// on purpose, so a contract reads back with exactly the shape it was
 	// created with; the top-level field is unchanged for existing clients.
 	Contract *WorkItemContractView `json:"contract,omitempty"`
+	// EffectiveScope (V12-31) is the work item's own effective scope — what a child created from it (a QA "Create fix task") starts
+	// from. Filled by GetWorkItem only; omitted from lists.
+	EffectiveScope []EffectiveScopeView `json:"effectiveScope,omitempty"`
+}
+
+// EffectiveScopeView is one repository of a work item's effective scope.
+type EffectiveScopeView struct {
+	RepositoryID string   `json:"repositoryId"`
+	Access       string   `json:"access"`
+	PathScopes   []string `json:"pathScopes,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
 }
 
 // AcceptanceCriterionView is one stored acceptance criterion — the response
@@ -191,6 +202,15 @@ func GetWorkItem(ctx context.Context, uow ports.UnitOfWork, scope ports.CommandS
 			return scopeMismatch("work item", workItemID)
 		}
 		detail = workItemToDetail(item)
+		scopes, err := tx.Work().ListWorkItemEffectiveScopes(ctx, workItemID)
+		if err != nil {
+			return err
+		}
+		for _, sc := range scopes {
+			detail.EffectiveScope = append(detail.EffectiveScope, EffectiveScopeView{
+				RepositoryID: string(sc.RepositoryID()), Access: string(sc.Access()), PathScopes: sc.PathScopes(), Reason: sc.Reason(),
+			})
+		}
 		return nil
 	})
 	return detail, err

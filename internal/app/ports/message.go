@@ -77,4 +77,6 @@ type AppendMessageRequest struct {
 	Pinned            bool   // V9-07: see message.Message.Pinned
 	DisplayOnly       bool   // V11-11: see message.Message.DisplayOnly
 	NodeRunID         string // V11-11: see message.Message.NodeRunID
+	TargetNodeKey     string // V12-18: see message.Message.TargetNodeKey
+	NextAttemptOnly   bool   // V12-18: see message.Message.NextAttemptOnly
 }

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1",
+  "nodes": [
+    {"key": "start", "type": "START", "outcomes": ["next"]},
+    {"key": "qa", "type": "APPROVAL", "outcomes": ["passed", "failed"],
+     "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 1209600, "escalationOutcome": "failed",
+                  "checklist": {"fromAcceptanceCriteria": true,
+                                "items": ["The changed screens load without an error in the browser console"],
+                                "passedOutcome": "passed", "failedOutcome": "failed"}}},
+    {"key": "reject", "type": "COMMAND", "outcomes": ["done"],
+     "command": {"commandRef": {"$ref": "command:cmd-reject"},
+                 "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}]}},
+    {"key": "end", "type": "END"}
+  ],
+  "edges": [
+    {"key": "start-qa", "from": "start", "outcome": "next", "to": "qa"},
+    {"key": "qa-end", "from": "qa", "outcome": "passed", "to": "end"},
+    {"key": "qa-reject", "from": "qa", "outcome": "failed", "to": "reject"},
+    {"key": "reject-end", "from": "reject", "outcome": "done", "to": "end"}
+  ],
+  "completionPolicyRef": {"$ref": "policy:policy-completion-qa"}
+}

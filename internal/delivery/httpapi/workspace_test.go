@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
@@ -42,7 +42,7 @@ type workspaceTestServer struct {
 
 func startWorkspaceTestServer(t *testing.T) workspaceTestServer {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "workspace-http.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "workspace-http.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestRequestWorkspaceReconciliation_CrossProject_ReturnsResourceHidden(t *te
 // duplicate-OperationID panic already guards uniqueness structurally; this
 // asserts the SET is exactly the 4 this task owns).
 func TestRegisterWorkspaceRoutes_RegistersFourProjectScopedRoutes(t *testing.T) {
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "workspace-routes.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "workspace-routes.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
@@ -607,13 +607,13 @@ func TestRegisterWorkspaceRoutes_RegistersFourProjectScopedRoutes(t *testing.T) 
 	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{}, nil, redact.NewMatcher())
 
 	descriptors := routes.Descriptors()
-	if len(descriptors) != 5 {
-		t.Fatalf("len(descriptors) = %d, want 5", len(descriptors))
+	if len(descriptors) != 7 {
+		t.Fatalf("len(descriptors) = %d, want 7", len(descriptors))
 	}
 	wantOperationIDs := map[string]bool{
 		"getWorkspaceSetState": false, "getRepositoryWorkspaceState": false,
 		"requestWorkspaceSetRelease": false, "requestWorkspaceReconciliation": false,
-		"adoptWorkspaceHead": false,
+		"adoptWorkspaceHead": false, "syncWorkspaceWithBase": false, "getWorkspaceBaseStatus": false,
 	}
 	for _, d := range descriptors {
 		if d.ScopeKind != httpapi.ScopeProject {

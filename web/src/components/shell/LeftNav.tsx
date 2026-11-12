@@ -2,7 +2,7 @@ import React from 'react';
 import {
   Stethoscope, LayoutGrid, ListTree, Columns3, Layers, Settings2,
   GanttChartSquare, MessageSquare, Package, Boxes, Wrench,
-  Eye, FileCode2, Network, ClipboardList, SquareTerminal,
+  Eye, FileCode2, Network, ClipboardList, SquareTerminal, Coins,
 } from '../icons';
 
 export type NavRoute =
@@ -12,6 +12,8 @@ export type NavRoute =
   | 'project-board'
   | 'project-components'
   | 'project-definitions'
+  | 'project-needs-you'
+  | 'project-costs'
   | 'task-overview'
   | 'task-graph'
   | 'task-workspace'
@@ -35,6 +37,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'doctor',              label: 'Doctor',          Icon: Stethoscope,     group: 'top' },
   { id: 'projects',            label: 'Projects',        Icon: LayoutGrid,      group: 'top' },
   { id: 'project-overview',    label: 'Overview',        Icon: Eye,             group: 'project' },
+  { id: 'project-needs-you',   label: 'Needs you',       Icon: ClipboardList,   group: 'project' },
+  { id: 'project-costs',       label: 'Costs',           Icon: Coins,           group: 'project' },
   { id: 'project-board',       label: 'Board',           Icon: Columns3,        group: 'project' },
   { id: 'project-components',  label: 'Components',      Icon: Boxes,           group: 'project' },
   { id: 'project-definitions', label: 'Definitions',     Icon: FileCode2,       group: 'project' },
@@ -55,9 +59,11 @@ interface LeftNavProps {
   projectSelected: boolean;
   taskSelected: boolean;
   collapsed?: boolean;
+  /** V12-16: counters shown next to an item (Needs you). */
+  badges?: Partial<Record<NavRoute, number>>;
 }
 
-export function LeftNav({ route, onNavigate, projectSelected, taskSelected, collapsed }: LeftNavProps) {
+export function LeftNav({ route, onNavigate, projectSelected, taskSelected, collapsed, badges }: LeftNavProps) {
   const renderGroup = (label: string | null, items: NavItem[]) => (
     <div className="mb-1" key={label ?? items.map(item => item.id).join('-')}>
       {label && !collapsed && (
@@ -85,6 +91,10 @@ export function LeftNav({ route, onNavigate, projectSelected, taskSelected, coll
               className={`flex-shrink-0 ${isActive ? 'text-[#3659E3]' : 'text-[#475569]'}`}
             />
             {!collapsed && <span>{item.label}</span>}
+            {!!badges?.[item.id] && (
+              <span className="ml-auto text-[11px] min-w-[18px] px-1 rounded-full bg-[#DC2626] text-white text-center" aria-label={`${badges[item.id]} waiting`}
+                data-testid={`nav-badge-${item.id}`}>{badges[item.id]}</span>
+            )}
           </button>
         );
       })}

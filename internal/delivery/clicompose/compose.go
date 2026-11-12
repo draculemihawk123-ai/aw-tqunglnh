@@ -128,9 +128,17 @@ type Deps struct {
 	RedoParker ports.SelectedChangeParker
 	// RepositoryProber (V11-12) backs `repository check`: the same read-only prober the worker runs.
 	RepositoryProber ports.RepositoryProber
-	Isolation        ports.IsolationEnforcementChecker
-	Agents           *agentregistry.Registry
-	Config           config.Config
+	// NewManifestPublisher (V12-21) builds the kit publisher runner for `definition manifest-status/manifest-run --manifest`.
+	NewManifestPublisher func(manifests map[string]string) (ports.ManifestPublisher, error)
+	// ForgeClient (V12-28) is the GitHub CLI client of `repository-workspace push/pull-request/merge`.
+	ForgeClient ports.ForgeClient
+	// SecretKeys (V12-29) protects the repository secret store's data key (`repository secret ...`).
+	SecretKeys ports.SecretKeyProvider
+	// RunAppHost (V12-30) reads the Run app logs `aw worker` writes (`repository-workspace run-app status`).
+	RunAppHost ports.RunAppHost
+	Isolation  ports.IsolationEnforcementChecker
+	Agents     *agentregistry.Registry
+	Config     config.Config
 	// ProviderProbe is what `aw doctor` runs the provider executable's
 	// version probe through (V9-05, NeedProviderProbe); nil skips that check.
 	ProviderProbe appdoctor.ProviderProbe

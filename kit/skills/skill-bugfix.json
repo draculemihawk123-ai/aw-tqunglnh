@@ -14,6 +14,19 @@
       "instruction": "Your stage: REPRODUCE THE BUG. The one job: write (or change) a test that makes the bug described in taskContract.behavior appear as a RED test. Do not change product code, do not fix the bug. After you comes an automatic check that runs the test suite: it passes only when the test is red. How: (1) read the bug description, the reproduction steps and the relevant code; if you lack the facts to build a reproduction, stop with the outcome needs_info and say what you need to know. (2) Write the smallest test, in terms of observable behaviour (input, output or final state), next to existing tests of the same kind, following their naming and structure. (3) The test must be red for EXACTLY that bug: check that the error message or the wrong value matches the description, not red because of a compile error, a missing import or wrong test data. (4) When the check says the test is not red, your test has not reached the bug: fix the test itself, do not assume the bug does not exist. (5) Finish with the outcome done and state: the test name, the command that runs it alone, the expected error message."
     },
     {
+      "key": "bugfix.repro-ui",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "kit/skills/skill-bugfix.json",
+        "revision": "v1",
+        "lastVerified": "2026-11-03T00:00:00Z"
+      },
+      "instruction": "Your stage: REPRODUCE A UI BUG WITH A BROWSER SCRIPT (the UI has no test suite yet). Write one or more scripts .aw-qa/<name>.mjs at the worktree root: Node ES modules that use the Playwright library (import { chromium } from 'playwright'), open process.env.AW_QA_BASE_URL, follow the steps of taskContract.behavior and check the expected behavior. Contract: save screenshots with page.screenshot({ path: `${process.env.AW_QA_OUT}/<step>.png` }) at the steps that show the bug; when the behavior is wrong print one line QA-ASSERT-FAILED: <what is wrong> and exit 1 (process.exitCode = 1, then close the browser); when it is right exit 0. Do not change product code, do not add Playwright or any dependency to package.json, do not put the scripts anywhere else. After you comes an automatic check that passes only when a script reports QA-ASSERT-FAILED; a crash or a missing selector is your script's error, not a reproduction. The application is already running (Run app); if it does not answer, or you lack the facts to reproduce, stop with the outcome needs_info and say what is missing. Prefer selectors by role and visible text; wait for the element, never for a fixed time."
+    },
+    {
       "key": "bugfix.fix",
       "priority": "REQUIRED_PROCEDURE",
       "global": true,

@@ -110,6 +110,8 @@ type Dependencies struct {
 	// RegisterWorkspaceRoutes performs), and threads it through here; this
 	// package never constructs its own.
 	Authority ports.ReleaseEligibilityAuthority
+	// Forge (V12-28) is the GitHub CLI client of `repository-workspace push/pull-request/merge`; nil refuses them.
+	Forge ports.ForgeClient
 	// Reader is the real ports.WorkspaceInspectionReader (a real
 	// internal/adapters/gitworktree.Provider in production)
 	// `repository-workspace source|diff|log` build their own
@@ -130,4 +132,6 @@ type Dependencies struct {
 	// (time.Now().UTC()) — nil in production, set only for deterministic
 	// tests.
 	Now func() time.Time
+	// Artifacts (V12-33) holds aw's copies of the worktree task documents (`repository-workspace aw-documents`).
+	Artifacts ports.ArtifactStore
 }

@@ -24,7 +24,7 @@ func usageErrorf(format string, args ...any) error {
 // (from -h/--help) is returned unwrapped so a future composition root can
 // keep treating it as cli.ExitSuccess.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return err
 		}

@@ -52,6 +52,18 @@ type Config struct {
 	// RecoverExpiredJobs, independent of the startup scan Run always
 	// does once immediately.
 	RecoveryInterval time.Duration
+	// OnHandlerError (V12-01), when set, is told about every job whose Handler returned an error
+	// (or panicked, or has no Handler), before the job is left for its lease to expire. Before
+	// V12-01 that error was dropped and a job could go DEAD five times over with nothing in any log
+	// saying why. It must not block for long: it runs on the worker goroutine.
+	OnHandlerError func(job ports.DurableJob, err error)
+	// ClaimGate (V12-04, UX-18), when set, is asked before every claim; a non-nil answer means "this worker cannot do work
+	// right now" (for `aw worker`: it cannot start a child process — a worker whose console was closed on Windows kept claiming
+	// jobs and every one failed with no evidence). The worker then claims nothing, waits PollInterval and asks again, so the
+	// jobs stay with a healthy worker. It must be cheap: cache the answer.
+	ClaimGate func(ctx context.Context) error
+	// OnClaimGateChange (V12-04), when set, is told each time ClaimGate's answer turns from nil to an error or back (err nil).
+	OnClaimGateChange func(err error)
 }
 
 // Validate fills in sane defaults for any zero-value field it can, and
@@ -105,6 +117,23 @@ type Pool struct {
 	queue    ports.JobQueue
 	registry *Registry
 	config   Config
+	gate     gateState
+}
+
+// gateState remembers ClaimGate's last answer so OnClaimGateChange hears each change once, not once per worker per poll.
+type gateState struct {
+	mu     sync.Mutex
+	closed bool
+}
+
+func (g *gateState) report(notify func(error), err error) {
+	g.mu.Lock()
+	changed := (err != nil) != g.closed
+	g.closed = err != nil
+	g.mu.Unlock()
+	if changed && notify != nil {
+		notify(err)
+	}
 }
 
 // New returns a Pool claiming jobs from queue and dispatching them
@@ -188,6 +217,16 @@ func (p *Pool) runWorker(runCtx, jobsCtx context.Context, workerIndex int) {
 		if runCtx.Err() != nil {
 			return
 		}
+		if p.config.ClaimGate != nil {
+			if err := p.config.ClaimGate(runCtx); err != nil {
+				p.gate.report(p.config.OnClaimGateChange, err)
+				if !p.sleepOrDone(runCtx, p.config.PollInterval) {
+					return
+				}
+				continue
+			}
+			p.gate.report(p.config.OnClaimGateChange, nil)
+		}
 		job, lease, err := p.queue.ClaimJob(runCtx, owner, p.config.LeaseTTL)
 		if err != nil {
 			// ports.ErrNoJobAvailable ("nothing to claim right now") and
@@ -228,6 +267,9 @@ func (p *Pool) runJob(jobsCtx context.Context, job ports.DurableJob, lease ports
 	<-heartbeatDone
 
 	if handleErr != nil {
+		if p.config.OnHandlerError != nil {
+			p.config.OnHandlerError(job, handleErr)
+		}
 		return // leave it un-completed; lease expiry + recovery reaper decide retry vs DEAD
 	}
 	// Best-effort: if the lease was lost between the last successful

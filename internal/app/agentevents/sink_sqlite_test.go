@@ -12,6 +12,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/eventschema"
@@ -50,7 +51,7 @@ const sqliteFixtureAttemptID = "attempt-1"
 func sqliteSinkFixture(t *testing.T) (store *sqlite.Store, uow ports.UnitOfWork, runID, nodeRunID, attemptID string) {
 	t.Helper()
 	ctx := context.Background()
-	dbStore, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit.db"))
+	dbStore, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

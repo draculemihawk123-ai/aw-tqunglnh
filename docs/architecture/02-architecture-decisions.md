@@ -1341,9 +1341,426 @@ thăm dò lại đúng đường dẫn đã lưu, `BLOCKED` chỉ đi tiếp đ�
 
 **Hệ quả:** tạo nhầm project thì đổi tên hoặc lưu trữ được; không thể mất lịch sử. Chưa có: xóa cứng, gộp project, xuất/nhập, tự phát hiện lệnh ghi không có biên nhận (nếu sau này có lệnh người dùng không ghi biên nhận thì phải tự kiểm trạng thái project).
 
-## 47. Baseline sau review thiết kế
+## 47. ADR-045 — Local commit mà worker không làm xong thì đóng `FAILED`/`EXECUTION_ERROR` có lý do; job DEAD không để lại thao tác `REQUESTED`
 
-ADR-001…044 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-01, UX-22):** ở chochuyennha, job `RELEASE_SET_LOCAL_COMMIT` bị nhận 5 lần, lần nào cũng `LEASE_EXPIRED` rồi `DEAD`;
+bản ghi local commit giữ `REQUESTED` mãi, không có lỗi ở giao diện, CLI hay log. Hai nguyên nhân trong mã: `workerpool` bỏ qua lỗi của
+handler (job chỉ đi tiếp qua lease hết hạn), và không có gì đóng thao tác khi job thành `DEAD`.
+
+**Quyết định:**
+
+1. Thêm lý do thất bại `EXECUTION_ERROR` (tập đóng của `ReleaseSetLocalCommitFailureReason`) và cột `failure_detail` (migration 0054):
+   chuỗi ngắn đã che bí mật, tối đa 1000 byte. API trạng thái local commit, `aw approval release` và sự kiện
+   `ReleaseSetLocalCommitFailed` v1 có thêm trường tùy chọn `failureDetail` (thêm, không phá vỡ).
+2. Ở lượt claim **cuối** (`claimCount = maxClaims`), lỗi của handler không còn để cho lease hết hạn: thao tác đóng
+   `FAILED/EXECUTION_ERROR` kèm lỗi, cùng transaction có fence hoàn tất job (như `NO_CHANGES`). Mất job lease thì không đóng.
+3. Worker quét định kỳ (mỗi phút và lúc khởi động) các thao tác `REQUESTED` có job `DEAD` (worker treo hoặc chết ở mọi lượt) và
+   đóng chúng `FAILED/EXECUTION_ERROR`, idempotent.
+4. Khi thao tác được yêu cầu cùng quyết định duyệt, blocker `RELEASE_FAILED` (ADR-040) mang cả chi tiết.
+5. `workerpool.Config.OnHandlerError`: worker ghi log mỗi lần handler lỗi (`jobId`, `kind`, `claim`, `maxClaims`, `error`).
+6. "Thử commit lại" là một yêu cầu local commit mới (idempotency key mới, expected version như cũ): thao tác `EXECUTION_ERROR`
+   được đếm như `NO_CHANGES` khi tính marker nên yêu cầu y hệt không đụng marker cũ. Nếu lần hỏng đã kịp tạo commit trước khi
+   worker chết, lần thử lại dừng `HEAD_DRIFT` (ADR-034) thay vì commit chồng: người vận hành xem rồi `adopt-head`.
+
+**Hệ quả:** không còn thao tác commit treo `REQUESTED` vô thời hạn; lý do hiện ở API, CLI, giao diện và log. Không đổi ADR-014 (vẫn
+không push/PR/merge) và không thêm mã lỗi vào tập §18.
+
+## 48. ADR-046 — Hết hạn mức của nhà cung cấp chặn node (`BLOCKED`), không làm hỏng run; tự chạy tiếp đúng node khi tới giờ reset
+
+**Bối cảnh (V12-03, UX-15, UX-17):** ADR-035 làm lỗi hạn mức thành attempt `FAILED` mã `PROVIDER_QUOTA_EXCEEDED`, không retry. Node hỏng,
+run `FAILED`. Chạy lại (ADR-041) bắt đầu từ `START` trên worktree còn code sửa dở: ở chochuyennha P1-01, `fix` hết hạn mức, lần chạy lại
+bắt đầu ở `repro` (không được sửa code sản phẩm) và lặp. Khảo sát: rerun luôn từ `START` là thiết kế (ADR-033/041: run mới là run mới),
+không phải giới hạn; nên sửa ở chỗ khác — đừng để run hỏng.
+
+**Quyết định:**
+
+1. Termination reason mới `PROVIDER_QUOTA_EXCEEDED` (đường `RUNNING -> BLOCKED`) và blocker cùng tên (migration 0055 nới CHECK của
+   `blockers`). Executor AGENT trả `BLOCKED` thay cho `FAILED` khi provider báo hết hạn mức; `FinalizeExecutionAttempt` chuyển NodeRun
+   `RUNNING -> BLOCKED`, mở blocker (lời của provider đã che bí mật, giờ sẽ chạy tiếp) dưới id của blocker admission, rồi đối chiếu tính
+   kết thúc của run như với scope expansion. Run vẫn `RUNNING`. Mã lỗi của ADR-035 vẫn còn cho executor khác và vẫn không bao giờ retry.
+2. Giờ reset đọc từ lời của provider (`ParseQuotaReset`: "resets 5pm", "resets 2:30am (Europe/Paris)", "reset at 21:05"; lần kế
+   tiếp sau bây giờ). Job `PROVIDER_QUOTA_RESUME` (RUN_WORK, gắn run nên bị fence khi hủy run) có sẵn lúc giờ reset + 2 phút, hoặc sau 1
+   giờ khi không đọc được giờ. Tối đa 6 lần tự chạy tiếp cho mỗi node của một run; sau đó chờ người.
+3. Chạy tiếp đi qua `RetryBlockedActivation` (V5-08D) — đường duy nhất được đóng blocker admission: chạy lại các kiểm tra admission
+   trên đúng các pin (không repin), tạo activation mới của **cùng node**, giữ `Iteration` (không tốn ngân sách vòng). Người vận hành
+   dùng cùng thao tác (nút Retry của node bị chặn, `aw node-run retry-blocked`); job đến sau thấy node đã chạy tiếp thì không làm gì.
+4. Chạy lại một run hỏng vì lý do khác có thêm lựa chọn `PARK_ALL` cho thay đổi chưa commit: cất **mọi** thay đổi (cả trong scope)
+   vào ref ẩn, run sau bắt đầu từ commit cuối. Không có "bỏ" phá hủy: `PARK_ALL` là cách bỏ an toàn, khôi phục được.
+
+**Hệ quả:** hết hạn mức không còn làm mất run hay bắt chạy lại từ đầu. Không đổi ADR-011 (manifest bất biến), ADR-033/041 (rerun vẫn
+từ `START`), ADR-035 (mã vẫn không retry). Đọc giờ reset theo lời của CLI: CLI đổi cách nói thì aw chờ 1 giờ rồi thử.
+
+## 49. ADR-047 — Sức khỏe của worker và provider: không đo được CLI không phải drift; worker không spawn được thì không nhận việc; mất đăng nhập chặn node
+
+**Bối cảnh (V12-04, UX-16, UX-18, UX-07):** probe `claude.exe --version` thoát `0xC0000142` (tiến trình không khởi động được) nên
+`VerifyNoDrift` báo `ADAPTER_BUILD_DRIFT` dù CLI không đổi; worker mất console vẫn nhận việc rồi mọi tiến trình con không khởi động,
+gate hỏng không evidence, không lý do; phiên OAuth hết hạn nhưng `aw doctor` vẫn `HEALTHY` và run hỏng.
+
+**Quyết định:**
+
+1. `VerifyNoDrift` trả `ErrAdapterBuildProbeFailed` (không phải drift) khi không đọc được file hoặc `--version` không chạy; probe thử 3
+   lần, cách 2 giây. Admission có lý do và blocker mới `ADAPTER_PROBE_FAILED` (nhóm admission, ngay sau drift), retry được như cũ.
+   Chỉ khi đo được và danh tính khác mới là `ADAPTER_BUILD_DRIFT`.
+2. `workerpool.Config.ClaimGate`: trước mỗi lần nhận việc, `aw worker` kiểm tra chạy được tiến trình con (`git --version`, cache 30
+   giây). Không chạy được thì không nhận việc, log `WORKER_CANNOT_SPAWN` một lần, tự nhận lại khi khỏe.
+3. COMMAND/MACHINE_GATE mà tiến trình không khởi động (lỗi spawn, hoặc mã thoát NTSTATUS `0xC0000142`/`0xC0000135`/`0xC0000139`) ghi
+   diagnostic `PROCESS_START_FAILED` có lý do; timeline đưa nó vào `failureDetail`; COMMAND coi là lỗi kỹ thuật (`PROVIDER_UNAVAILABLE`),
+   không bao giờ route như kết luận của lệnh.
+4. Lời của provider báo chưa đăng nhập (`ports.IsProviderLoginMessage`) cho termination reason/blocker `PROVIDER_LOGIN_REQUIRED`: attempt
+   và NodeRun `BLOCKED` như ADR-046 nhưng không tự chạy tiếp; người vận hành đăng nhập lại rồi Retry. `aw doctor` có check
+   `provider_login` (`DEGRADED` khi còn blocker này mở) — aw không hỏi CLI trạng thái đăng nhập vì việc đó tốn một lượt gọi.
+5. Giao diện: thẻ blocker ở đầu trang task có nút **Retry** khi server trả `retryBlockedActivation` trong `validActions`.
+
+**Hệ quả:** migration 0056 nới CHECK của `blockers`. Chưa có: danh sách worker đang chạy trên giao diện (cần bảng heartbeat của worker,
+để task sau).
+
+## 50. ADR-048 — "Use the new CLI": đo lại CLI, đăng ký build, publish workflow version ghim build mới, tùy chọn làm lại; nút Redo lấy từ redo-preview
+
+**Bối cảnh (V12-05, UX-05, UX-06):** CLI tự cập nhật làm mọi node AGENT `ADAPTER_BUILD_DRIFT`. Muốn dùng bản mới phải probe/register
+trong terminal, publish lại định nghĩa, hủy run, rồi `recreate-task.sh`. Sau khi hủy, nút "Redo with Latest Version" biến mất: giao diện
+chỉ đọc `validActions` từ chẩn đoán của run đang hiện trên thẻ, mà thẻ không còn run sau khi hủy.
+
+**Quyết định:**
+
+1. Lệnh mới `UseNewCli` (`POST /work-items/{id}/use-new-cli`, `aw work-item use-new-cli`, gói `internal/app/cliupgrade`), chỉ cho node có
+   blocker `ADAPTER_BUILD_DRIFT` đang mở: `adapterbuild.MeasureCurrent` đo lại đúng executable của build đang ghim (cùng phép đo của
+   `VerifyNoDrift`), rồi `ProbeAdapterBuild` + `RegisterAdapterBuild` (scope cài đặt), rồi `PublishDefinitionVersion` một version mới của
+   định nghĩa workflow của run, trong đó node AGENT nào ghim build cũ thì ghim build mới (phần còn lại của tài liệu giữ nguyên). Tùy chọn
+   `redo` gọi `RecreateWorkItem` có sẵn; run còn sống thì không làm lại và trả `nextStep`.
+2. Không repin run đang chạy (yêu cầu 16, ADR-011). CLI đo ra đúng build đang ghim thì từ chối (`ErrNoDrift`, 409): đó là việc của Retry.
+3. Mỗi bước là một lệnh idempotent riêng, khóa suy ra từ khóa của người gọi; gửi lại cùng khóa thì replay đúng build và version cũ.
+4. Giao diện: blocker drift có nút **Use the new CLI** (hộp thoại xác nhận, mặc định có "redo"). Nút Run Again / Redo lấy từ
+   `getWorkItemRedoPreview` khi thẻ không có run (cùng nguồn với lệnh `redo-preview`).
+
+**Hệ quả:** route thứ 115, dòng UX Screen 7 số 17, parity. Version do lệnh này publish là của engine; lần `aw-publish.py` sau của kit
+publish lại theo manifest như thường.
+
+## 51. ADR-049 — Cạnh escalation của vòng được dẫn tới cổng người (APPROVAL) nằm trong vòng; size-review thay cho reject khi simplify hết lượt
+
+**Bối cảnh (V12-06, UX-26):** trong `wf-task-delivery-plus`, `simplify` hết 3 lần thì `escalated → reject`, đóng task dù `gate1` đạt cả 3 lần
+(P2-02 tốn khoảng 1,8 USD cho 3 lần simplify không giảm được file nào). Muốn đưa tới một cổng người có lựa chọn "làm lại" thì cổng đó nằm
+trong vòng (rework → build), mà ADR-036 bắt cạnh escalation phải rời vòng (compiler và `advanceRunTx`).
+
+**Quyết định:**
+
+1. Ngoại lệ hẹp của ADR-036: cạnh escalation được ở lại trong vòng **khi đích là node APPROVAL** (`workflow.EscalatesToHumanGate`).
+   Mỗi vòng tiếp theo phải qua quyết định của người nên vòng không thể tự chạy vô hạn. Áp dụng ở cả kiểm tra lúc publish và lúc định
+   tuyến (`advanceRunTx`, kể cả kiểm tra trước khi ghi). Đích khác vẫn bị từ chối như cũ.
+2. Kit 1.9.0: `simplify` có thêm outcome `no_change`; `escalated` và `no_change` dẫn tới APPROVAL `size-review` (`accept → quality`,
+   `rework → build`, `rejected → reject`; `cyclePolicy` 2, hết thì `rejected` ra ngoài vòng).
+3. Ngưỡng `diff-size` theo component: file `.aw-diff-size` trong repository (tiền tố đường dẫn và ba ngưỡng), output luôn liệt kê số liệu
+   từng component. `diff-size` vẫn không bỏ qua được (V10-15).
+
+**Hệ quả:** chưa làm phần đặt ngưỡng trên trang Components của giao diện (cần cột cấu hình, migration, API): ngưỡng nằm trong repository
+và đổi bằng commit. Ghi lại cho task sau.
+
+## 52. ADR-050 — Khóa migration là khóa ghi của SQLite; `aw up` chạy serve và worker trong một tiến trình
+
+**Bối cảnh (V12-08, UX-08):** bật aw cần hai cửa sổ terminal; bật cùng lúc trên database mới thì một bên lỗi migration (`duplicate column
+name`, hoặc `table projects already exists`): cả hai đọc "chưa áp dụng" ngoài transaction rồi lần lượt áp dụng.
+
+**Quyết định:**
+
+1. Mỗi migration kiểm lại `schema_migrations` **bên trong** transaction của nó, sau khi đã giữ khóa ghi (`_txlock=immediate`); đã có thì
+   không làm gì. Tiến trình đến sau chờ khóa (`busy_timeout`, rồi thử lại tới 2 phút). Không cần bảng khóa hay file khóa riêng.
+2. Lệnh tiến trình mới `aw up`: `serve` và `worker` trong cùng tiến trình, chung context (một bên dừng thì bên kia dừng), chung stdout/
+   stderr. Cờ chung truyền một lần; cờ riêng qua `--serve-args`/`--worker-args`. `serve` và `worker` vẫn chạy riêng được như cũ.
+
+**Hệ quả:** tập lệnh tiến trình là `serve`, `worker`, `up`, `version`.
+
+## 53. ADR-051 — Tóm tắt kết quả mỗi activation (`resultSummary`) và lý do dừng có kiểu (`stopReason`) trong projection đọc của run
+
+**Bối cảnh (V12-11, UX-27):** banner chỉ ghi `RUN_FAILED`; nguyên nhân thật (P2-02: `gate1` lần 4 không khởi chạy được, không evidence)
+phải đọc bằng CLI; mỗi node chỉ có trạng thái, không có "nó đã làm gì".
+
+**Quyết định:**
+
+1. `NodeActivationView.resultSummary` (thêm, tùy chọn): một dòng đã che bí mật, tối đa 200 ký tự, do route `getRunGraph` điền cho các
+   activation của trang (đọc chi tiết node như `getNodeRunDetail`). AGENT: dòng có nghĩa đầu tiên của báo cáo cuối; COMMAND: dòng tóm tắt
+   theo quy ước của kit (`<lệnh>: …`), không có thì dòng cuối không rỗng; MACHINE_GATE: số tiêu chí đạt; APPROVAL: quyết định và người duyệt
+   (`ApprovalRequestView.resolvedBy` mới); node hỏng hoặc bị chặn: lỗi bằng lời.
+2. `RunDiagnostics.stopReason` (API `getRunDiagnostics`, `aw run diagnostics`): `{code, nodeKey, nodeRunId, message}` tiếng Anh. Mã:
+   `COMMAND_NOT_STARTED`, `SCOPE_VIOLATION`, `PROVIDER_QUOTA_EXCEEDED`, `CYCLE_ESCALATED`, `APPROVAL_REJECTED`, `APPROVAL_PENDING`,
+   `WORKFLOW_DEFINITION_DEFECT`, `ATTEMPT_FAILED`, `RUN_CANCELLED`, `RUN_FAILED`, và loại blocker (ví dụ `ADAPTER_BUILD_DRIFT`) khi một node
+   đang bị chặn. Suy ra từ timeline và blocker của run (`DeriveStopReason`, hàm thuần), không ghi thêm dữ liệu.
+
+**Hệ quả:** hai trường thêm vào, không phá vỡ client cũ. Không đổi tập mã lỗi §18 (stopReason là mã hiển thị, không phải mã lỗi).
+
+## 54. ADR-052 — "Needs you": một truy vấn đọc gom việc chờ người của project; thông báo trình duyệt; kênh ngoài để sau
+
+**Bối cảnh (V12-16, UX-28, UX-29):** việc chờ người (cổng duyệt, run hỏng, node bị chặn, câu hỏi cần thông tin) nằm rải rác trong từng task.
+
+**Quyết định:**
+
+1. Truy vấn `ListNeedsYou` (`GET /projects/{projectId}/needs-you`, `aw run needs-you`): mọi ApprovalRequest `PENDING` của run đang
+   `RUNNING`/`WAITING` (kèm outcome của node và version để quyết định) và mọi blocker `OPEN` của các WorkItem chưa `DONE`/`CANCELLED`,
+   mới nhất trước. Chỉ đọc; hành động là các lệnh có sẵn (`resolveApproval` ngay trên trang, các hành động khác ở trang task).
+2. Giao diện: trang Needs you, bộ đếm trên menu (hỏi lại 15 giây), thông báo của trình duyệt khi có mục mới (người vận hành bật trên trang).
+3. Kênh ngoài (e-mail, webhook) gửi dữ liệu ra khỏi máy: **không làm** trong ADR này; cần ADR riêng, và khi làm chỉ gửi tiêu đề kèm link.
+
+**Hệ quả:** route thứ 116, dòng UX Screen 7 số 18, parity.
+
+## 55. ADR-053 — Message có người nhận: một node, hoặc chỉ attempt kế tiếp
+
+**Bối cảnh (V12-18, UX-20):** message của người vận hành gắn vào cả WorkItem, nên mọi node AGENT về sau đều nhận. Ghi chú "không sửa
+code sản phẩm" viết cho `repro` làm `fix` cũng không sửa code, mất 2 vòng.
+
+**Quyết định:**
+
+1. Message có thêm hai trường, chọn lúc append và không đổi (chat vẫn append-only, migration 0057): `targetNodeKey` (chỉ attempt của
+   node có key đó nhận; rỗng = mọi node như trước) và `nextAttemptOnly` (chỉ attempt đầu tiên được lên lịch sau message nhận, của
+   node đích nếu có). HTTP `appendMessage`, `aw message append --node --next-attempt-only`.
+2. Scheduler lọc trước khi áp ngân sách message (ADR của V9-07): message không nhắm node này không vào snapshot, không vào cả
+   `omittedMessageRefs`. Snapshot vẫn bất biến và hash không đổi với chat không dùng trường mới.
+3. "Đã giao" không lưu trên message: đọc từ context snapshot của các attempt (message nằm trong `messageRefs` hoặc
+   `omittedMessageRefs`). `listMessages` trả `delivered`. Chỉ đọc snapshot khi chat có message `nextAttemptOnly`.
+4. Key node không được kiểm với workflow (WorkItem có thể chạy lại ở version khác): key sai chỉ không tới prompt nào, giao diện
+   chọn key từ các node AGENT của run mới nhất. Node CHECKER không đọc chat nên không bị ảnh hưởng.
+5. Chạy lại có mang note (`CarryMessages`) giữ đích của message, bỏ message `nextAttemptOnly` đã giao.
+
+**Hệ quả:** cảnh báo trong doc về "MessageRefs cùng OmittedMessageRefs là mọi message của WorkItem" nay hiểu là mọi message
+nhắm tới node đó; thêm trường vào schema `appendMessage`/`listMessages` (bổ sung, không phá vỡ).
+
+## 56. ADR-054 — Hàng đợi task của family: worker chạy task kế khi task trước DONE; task hỏng làm hàng đợi dừng
+
+**Bối cảnh (V12-19, UX-30):** người vận hành phải đợi task trước xong rồi tự bấm chạy task sau. Family dùng chung một worktree nên
+các task không chạy song song được.
+
+**Quyết định:**
+
+1. Bảng `work_item_queue_entries` (migration 0058): mỗi WorkItem tối đa một chỗ trong hàng đợi của family, có `position`,
+   `waitsForWorkItemId` (cùng family), trạng thái `QUEUED → STARTED | REMOVED`, `problem`, version CAS.
+   Lệnh `SetWorkItemQueue` (`POST /work-items/{id}/queue`, `aw work-item queue`) và truy vấn `GetFamilyQueue`
+   (`GET /work-items/{id}/queue`, `aw work-item queue-show`).
+2. Worker quét mỗi 10 giây (`AdvanceFamilyQueues`): chỉ mục `QUEUED` đứng đầu được chạy, và chỉ khi task hàng đợi chạy trước nó
+   đã `DONE`, family không có run đang chạy, task nó chờ (nếu có) đã `DONE`. Run được tạo qua `StartWorkflowRun` với version đã
+   ghim của WorkItem, actor `aw-queue`, idempotency key gắn version của mục (hai worker quét cùng lúc chỉ tạo một run).
+3. Fail-closed: task hàng đợi chạy mà hỏng hoặc bị hủy thì hàng đợi dừng; chạy lại task đó (khi `DONE` thì đi tiếp) hoặc bỏ task kế
+   ra. Không chạy được (chưa `READY`, baseline chưa đạt…) thì giữ `QUEUED` và ghi `problem`.
+4. Điều kiện là `DONE`, không phải "qua cổng duyệt cuối": sau cổng cuối còn commit và hoàn tất run, chạy task kế lúc đó sẽ tranh
+   worktree. Tạm dừng theo hạn mức để V12-23.
+
+**Hệ quả:** route 117 và 118, hai dòng UX Screen 7 (19, 20), parity; `Tx.Queue()`.
+
+## 57. ADR-055 — Đồng bộ worktree với nhánh gốc: fetch nhánh gốc khi người vận hành yêu cầu, chỉ fast-forward; đóng đợt việc xóa nhánh đã merge
+
+**Bối cảnh (V12-20, UX-24, UX-14):** sau khi PR được merge trên GitHub, nhánh family vẫn đứng ở commit cũ; người vận hành phải
+`git merge --ff-only` trong worktree rồi `adopt-head.sh`. Release xong, nhánh `agentkit/w-…` vẫn còn.
+
+**Quyết định:**
+
+1. Sửa ràng buộc "aw không bao giờ fetch" (ADR-004/ADR-014): aw được **fetch đúng một nhánh** (default ref của repository) từ
+   remote `origin` vào `refs/remotes/origin/<nhánh>`, chỉ khi người vận hành gọi `SyncWorkspaceWithBase`. Không push, không clone,
+   không đổi nhánh cục bộ nào ngoài nhánh của worktree.
+2. `SyncWorkspaceWithBase` (`POST .../repository-workspaces/{id}/sync-base`, If-Match, `aw repository-workspace sync-base`): điều
+   kiện như `AdoptWorkspaceHead`, thêm HEAD phải là revision đã ghi. Lấy tip mới hơn giữa nhánh cục bộ và `origin/<nhánh>`;
+   HEAD là tổ tiên thì `merge --ff-only` rồi ghi qua `AdoptWorkspaceHead` (event `WorkspaceHeadAdopted` là audit); rẽ nhánh thì
+   `NEEDS_MERGE`, bẩn thì `DIRTY`, không đổi gì. Không bao giờ tạo merge commit.
+3. `GetWorkspaceBaseStatus` (`GET .../base-status`, `aw repository-workspace base-status`): ahead/behind/merged, không fetch.
+   `merged` = family có commit và nhánh gốc chứa hết.
+4. Release worktree (đóng đợt việc) xóa nhánh của worktree khi một nhánh hoặc remote-tracking ref khác đã chứa tip của nó; nhánh
+   còn commit riêng thì giữ. Lỗi xóa nhánh không làm release hỏng.
+5. Port `WorkspaceBaseSyncer` do `gitworktree.Provider` cài; route nhận nó từ cùng provider với `WorkspaceHeadAuditor`.
+
+**Hệ quả:** route 119, 120; hai dòng UX Screen 9 (11, 12); parity; doc operator 00 và 06 sửa câu "never fetches".
+
+## 58. ADR-056 — Publish định nghĩa từ giao diện: server chạy `aw-publish.py` của kit trên manifest người vận hành cấu hình
+
+**Bối cảnh (V12-21, UX-04):** publish định nghĩa của project chỉ làm được bằng `aw-publish.py aw-project.json` trong terminal. Script
+(~900 dòng) giữ thứ tự phụ thuộc, template, `$ref`, prefix của kit và trạng thái `aw-state.json`; engine đã có API publish từng
+definition và diff version.
+
+**Quyết định:**
+
+1. Logic publish **ở lại trong kit**. Đưa nó vào engine sẽ buộc engine vào bố cục của kit; giao diện tự gọi từng API publish thì
+   lặp lại script và không đọc được file trên đĩa.
+2. `aw serve --project-manifest <projectId>=<path>` (lặp được) và `--python`: server chạy `<kit>/scripts/aw-publish.py <manifest>
+   [--check]` (kit tìm từ khóa `"kit"` của manifest), cwd là thư mục manifest, với `AW` là chính binary này và `AW_DB`/
+   `AW_ARTIFACT_ROOT`/`AW_WORKSPACE_ROOT`/`AW_CLAUDE_EXECUTABLE` của server. **Đường dẫn chỉ đến từ cấu hình lúc khởi động**,
+   không bao giờ từ request, nên route không chạy được file nào khác.
+3. Port `ManifestPublisher`, adapter `kitpublish` (process), app `manifestpublish` (Status, Run, RunCommand có receipt).
+   `GET /projects/{id}/definition-manifest`, `POST .../definition-manifest/run {mode: CHECK|PUBLISH}` (Idempotency-Key);
+   CLI `aw definition manifest-status`/`manifest-run --manifest`. Một lần chạy mỗi project, dừng sau 10 phút; output tối đa 64 KiB,
+   secret đã biết bị che.
+4. Giao diện: panel Manifest trên Definitions (Check, Publish… có xác nhận, output); diff version dùng API có sẵn.
+
+**Hệ quả:** route 121, 122; hai dòng UX Screen 3 (6, 7); parity; server cần Python khi dùng `--project-manifest`.
+
+## 59. ADR-057 — Chi phí theo task/đợt/project từ số liệu của provider; trần ngân sách theo WorkItem gốc; hàng đợi dừng khi vượt hoặc chạm hạn mức
+
+**Bối cảnh (V12-23, UX-35, UX-36):** chi phí chỉ thấy theo từng run; không có tổng theo đợt việc, không có trần, và hàng đợi
+(V12-19) không biết tiền hay hạn mức.
+
+**Quyết định:**
+
+1. `GetProjectCosts` (`GET /projects/{id}/costs`, `aw run costs`): tổng token và USD do CLI của provider báo (event
+   `USAGE_REPORTED`, như V9-13a) theo task, theo đợt (WorkItem gốc và mọi task dưới nó) và cả project. Không phải hóa đơn.
+2. Bảng `work_item_budgets` (migration 0059), `SetWorkItemBudget` (`POST /work-items/{id}/budget`, `aw work-item budget`): trần
+   USD cho một WorkItem **gốc**. Gần (≥ 80%) và vượt (≥ 100%) hiện trên trang Costs.
+3. Hàng đợi của family không chạy task mới khi đợt đã vượt trần, hoặc khi có blocker `PROVIDER_QUOTA_EXCEEDED` đang mở ở bất kỳ
+   đâu trong bản cài (hạn mức là của tài khoản provider). Run đang chạy không bị dừng.
+4. Hạn mức còn lại: CLI của Claude có in dòng `rate_limit_event` trong stream-json, nhưng adapter hiện chỉ ghi nó là
+   `STATUS_CHANGED` và bỏ nội dung; cấu trúc trường của nó **chưa được xác minh** (môi trường làm V12-23 không có CLI thật). Vì vậy
+   aw chỉ biết hạn mức khi chạm (V12-03) và giờ reset, không đoán số còn lại. Đọc `rate_limit_event` để hiện hạn mức còn lại và
+   dừng hàng đợi trước khi chạm là việc sau, cần một bản ghi stream thật để làm fixture.
+
+**Hệ quả:** route 123, 124; hai dòng UX Screen 7 (21, 22); parity; `Tx.Budgets()`.
+
+## 60. ADR-058 — Commit message theo quy ước của repository: marker là trailer cuối thân, mẫu message theo project
+
+**Bối cảnh (V12-25, UX-13):** commit do aw tạo có tiêu đề là tiêu đề WorkItem kèm "(lần 3)" và chuỗi
+`[Release-Set-Local-Commit-Marker: sha256:…]` ngay trên dòng tiêu đề, không có thân. Lý do cũ: adapter Git chỉ nhận message một dòng.
+
+**Quyết định:**
+
+1. Adapter Git nhận message nhiều dòng (dòng tiêu đề không rỗng, thân tùy chọn; cấm NUL, CR đơn và ký tự điều khiển khác ngoài
+   xuống dòng và tab), ghi bằng `git commit --cleanup=verbatim -F -` (dòng bắt đầu bằng `#` được giữ).
+2. Marker vẫn bắt buộc (truy ngược ReleaseSet), nhưng là **trailer** cuối thân: nối vào đoạn cuối nếu đoạn đó đã là trailer,
+   không thì thành đoạn riêng. `FindLocalCommitByMarker` tìm như cũ (chuỗi con).
+3. Mẫu message theo project (`project_settings`, migration 0060, khóa `commit_message_template`): `GetProjectCommitTemplate`/
+   `SetProjectCommitTemplate` (`GET`/`POST /projects/{id}/commit-template`, `aw project commit-template`/`set-commit-template`).
+   Biến: `{title}` (bỏ hậu tố " (lần N)", bỏ tiền tố `T-01: ` khi mẫu có `{taskId}`), `{taskId}`, `{workItemId}`; mặc định `{title}`.
+   Giao diện điền message mặc định của hộp commit ở cổng duyệt từ mẫu.
+4. Tiêu đề WorkItem khi làm lại vẫn giữ " (lần N)" (để phân biệt trên bảng); chỉ commit message bỏ nó.
+
+**Hệ quả:** commit cũ (marker trên dòng tiêu đề) vẫn được nhận diện; route 125, 126; hai dòng UX Screen 7 (23, 24); parity.
+
+## 61. ADR-059 — Xem prompt của attempt: dựng lại từ ContextSnapshot, không lưu thêm
+
+**Bối cảnh (V12-26, UX-12):** `InstructionArtifact` (prompt) được tạo cho mỗi attempt nhưng không có đường đọc (V11-11 đã ghi giới hạn
+này), và không dòng nào trong DB trỏ tới artifact đó.
+
+**Quyết định:**
+
+1. Không thêm cột hay bảng. Prompt được **dựng lại** từ ContextSnapshot của attempt bằng đúng hàm render mà bước lắp request dùng
+   (`renderAttemptInstruction`, tách ra từ `AssembleAgentExecutionRequest`); render là tất định theo snapshot, nên cùng byte.
+2. `ReadAttemptPrompt` (`GET /projects/{projectId}/execution-attempts/{attemptId}/prompt`, `aw node-run prompt`): chỉ attempt AGENT
+   có snapshot; che secret đã biết; tối đa 512 KiB; attempt của project khác là "không tìm thấy". Quyền như xem evidence (V11-11, quyết
+   định 3).
+3. Giao diện: mục Prompt trong ngăn chi tiết node AGENT, chỉ tải khi bấm "Show prompt", chọn attempt.
+
+**Hệ quả:** route 127; dòng UX Screen 8 số 10; parity. Nếu render đổi theo version của binary thì snapshot đã ghi schema
+(`InstructionSchemaV1/V2`) quyết định cách render, như khi chạy.
+
+## 62. ADR-060 — Merge, push, PR và trạng thái CI từ giao diện (dùng git và gh của máy)
+
+**Trạng thái:** đã duyệt (product owner, 2026-11-03), phương án B. Sửa ADR-014: push nhánh family, tạo PR và merge qua forge có
+executor, trong giới hạn dưới đây (V12-28).
+
+**Bối cảnh (UX-01, UX-39):** duyệt kèm commit (V11-07) và đồng bộ nhánh gốc (V12-20, ADR-055) đã làm được trên giao diện, nhưng push,
+mở PR, xem CI và merge vẫn phải làm trong terminal.
+
+**Quyết định:**
+
+1. **Credentials của máy.** `git push` dùng credential helper của máy, mọi thao tác GitHub dùng `gh` đã đăng nhập (`gh auth`). aw không
+   giữ, không lưu, không hiện token. `gh` chưa đăng nhập thì báo đúng lệnh cần chạy.
+2. **Chỉ GitHub**, nhưng mọi lệnh gọi forge đi qua một port (`ForgeClient`) có adapter `gh`; GitLab là một adapter thêm sau.
+3. **Bước 1 — push và PR.** Push nhánh của family lên `origin`. Tên nhánh remote đặt được khi push lần đầu (mặc định
+   `agentkit/w-…`), sau đó cố định. **Cấm** push lên nhánh gốc, cấm force-push, cấm ghi đè một nhánh remote đã có mà không do aw tạo.
+   Tạo PR mặc định **ready**, có ô chọn Draft. Trạng thái PR và check được đọc lại theo chu kỳ.
+4. **Bước 2 — merge** (qua `gh pr merge`, aw không merge cục bộ rồi push). Điều kiện:
+   - mọi commit trong PR đã qua một cổng APPROVAL của aw (tức là commit do aw tạo kèm marker của một quyết định duyệt);
+   - nếu repository có check thì mọi check phải xanh; nếu PR **không có check nào**, hộp xác nhận ghi rõ "PR này không có CI";
+   - không đòi review của người trên GitHub (tác giả không tự approve được PR của mình; với người làm một mình điều kiện đó chặn mãi).
+   Kiểu merge mặc định là **merge commit** (giữ lịch sử từng task), đổi được (squash, rebase) trong hộp xác nhận.
+5. **Ai được bấm:** role `operator`. Mỗi thao tác có hộp xác nhận nêu đúng remote, nhánh, commit, PR.
+6. **Audit:** event cho push, tạo PR, merge (remote, ref, commit, URL PR, kiểu merge, người bấm). Trạng thái PR/check là dữ liệu đọc lại.
+7. **Fail-closed:** không có `origin`, không có `gh`, nhánh có commit chưa qua cổng duyệt, nhánh remote không do aw tạo — từ chối và nói
+   lý do.
+
+## 63. ADR-061 — Kho secret theo repository
+
+**Trạng thái:** đã duyệt (product owner, 2026-11-03) (V12-29).
+
+**Bối cảnh (UX-34):** `SecretResolver` chỉ đọc biến môi trường của worker (`internal/adapters/secretenv`), nên giá trị cho gate và
+ứng dụng phải nằm trong file local của repo; mật khẩu DB dev của chochuyennha từng bị commit.
+
+**Quyết định:**
+
+1. Bảng `repository_secrets` (project, repository, tên, giá trị **đã mã hóa** AES-256-GCM, version, người sửa, thời điểm). Phạm vi
+   **theo repository**; project nhiều repo thì chấp nhận lặp giá trị (secret dùng chung cho project làm sau, khi thật sự cần).
+2. Khóa dữ liệu nằm **ngoài** SQLite, bảo vệ theo hệ điều hành: Windows **DPAPI** (CurrentUser), macOS **Keychain**, Linux **Secret
+   Service** nếu có, không có thì file `0600` cạnh `--artifact-root`. (Trên NTFS quyền `0600` không có tác dụng thật, nên Windows
+   không dùng file khóa.) Backup DB không kèm khóa.
+3. API và giao diện: thêm, đổi (ghi đè), xóa, liệt kê **tên** — không bao giờ trả giá trị. Quyền: role `operator`.
+4. **Nhập từ `.env` một lần:** chỉ hiện tên để xác nhận, không hiện giá trị, không giữ lại file. Không nhập từ `.properties` (Spring đọc
+   được biến môi trường như `CHOCHUYENNHA_DB_PASSWORD`).
+5. Dùng: `SecretRefs` của COMMAND/gate giải từ kho trước, rồi mới tới biến môi trường; hồ sơ Run app (ADR-062) tiêm cùng cách.
+   **Không bao giờ** vào prompt, ContextSnapshot, evidence hay log; giá trị được thêm vào `redact.Matcher` của lần chạy.
+6. `env-allowlist` vẫn áp cho biến thừa kế; secret tiêm theo tên là danh sách riêng, ghi trong ExecutionProfile.
+
+## 64. ADR-062 — Chạy ứng dụng của worktree để QA tay
+
+**Trạng thái:** đã duyệt (product owner, 2026-11-03) (V12-30). Dùng ADR-061 cho biến bí mật.
+
+**Quyết định:**
+
+1. Hồ sơ "Run app" theo repository: các tiến trình (ví dụ backend, frontend), mỗi tiến trình có lệnh argv (không chuỗi shell), thư
+   mục con, cổng, biến môi trường thường, tên secret (ADR-061), URL preview; thời gian tự tắt.
+2. **Chạy trong `aw worker`** (nơi đã có supervisor, Job Object, giải secret, env-allowlist); `aw serve` chỉ là API. `aw up` (ADR-050)
+   bật cả hai.
+3. Start/Stop trên giao diện; log từng tiến trình (giới hạn, che secret); link preview.
+4. **Mỗi hồ sơ (bộ cổng) một phiên**, không chạy song song (chochuyennha dùng cổng cố định). Trước khi Start, kiểm cổng còn trống và
+   báo tiến trình đang giữ cổng.
+5. Dọn tiến trình: process group (Unix) / Job Object (Windows); Stop, worker dừng hay chết đều giết cả cây.
+6. Tự tắt sau **2 giờ** mặc định (đổi được theo hồ sơ) và khi worktree được release. Không chạy khi có attempt giữ write lease.
+
+## 65. ADR-063 — QA trong aw
+
+**Trạng thái:** đã duyệt (product owner, 2026-11-03) (V12-31).
+
+**Quyết định:**
+
+1. **Mở rộng APPROVAL bằng cấu hình checklist** (không thêm loại node), outcome `passed` / `failed`; dùng lại role, timeout, release và
+   evidence của cổng người. Mục QA lấy từ acceptance criteria của task được QA, thêm mục tay; mỗi mục đạt/không đạt, ghi chú, ảnh
+   (attachment có sẵn). Kết quả là evidence `QA_CHECKLIST`. Workflow kit `wf-qa` dùng node đó.
+2. Nút **Create fix task** trên mục không đạt mở form New task (V12-14) điền sẵn: kind bugfix, behavior từ ghi chú, ảnh, scope của task
+   gốc.
+3. Biến thể bugfix cho UI chưa có test: bước tái hiện là script Playwright do agent viết, chạy như COMMAND, evidence là ảnh trước/sau.
+   Script để **trong artifact của aw** mặc định; project bật được "đưa vào repo" (chochuyennha hoãn chọn framework test frontend tới
+   Gate A, nên không thêm dependency vào `package.json` lúc này).
+4. Người QA mở ứng dụng bằng ADR-062.
+
+## 66. ADR-064 — Truy cập từ xa và màn duyệt cho điện thoại
+
+**Trạng thái:** đã duyệt (product owner, 2026-11-03), có sửa phạm vi. Sửa ranh giới tin cậy của ADR-016 cho phiên từ xa.
+**Triển khai:** V13 (V13-01 … V13-04 trong `docs/design/16-v13-remote-access.md`); chuyển khỏi V12-32 theo quyết định của product
+owner ngày 2026-11-04.
+
+**Quyết định:**
+
+1. Server vẫn chỉ nghe loopback. Truy cập từ xa qua tunnel có xác thực do người vận hành dựng; **khuyến nghị Tailscale** (mạng riêng,
+   không mở hostname công khai) thay cho Cloudflare Tunnel công khai. aw không mở cổng ra ngoài.
+2. Phiên từ xa: ghép cặp bằng mã một lần (QR) từ máy chạy aw, token gắn thiết bị, thu hồi được, hết hạn. Phiên local như cũ.
+3. Phạm vi phiên từ xa: chỉ đọc, cộng các thao tác của "Needs you" (quyết định approval, Retry, Run Again), **duyệt kèm commit cục bộ**
+   (không push; commit cục bộ hoàn tác được) và **Cancel Run**. Vẫn cấm push, merge, publish, xóa và đổi cấu hình.
+4. Màn duyệt cho điện thoại: Needs you, chi tiết approval kèm diff (V12-17), nút quyết định.
+5. **Thông báo đẩy:** kênh ngoài của ADR-052 là một **webhook chung** (dùng được với ntfy, Telegram, Discord). Payload chỉ gồm loại sự
+   kiện, tiêu đề task và link; không có code hay diff.
+
+## 67. ADR-065 — Nơi lưu tài liệu trung gian của kit
+
+**Trạng thái:** đã duyệt (product owner, 2026-11-03), phương án C (V12-33).
+
+**Quyết định:**
+
+1. Cài đặt theo project (`aw project set-task-documents`, trang project, `"taskDocuments"` trong `aw-project.json`): **REPO** (mặc định,
+   như V10: `frame.md`, `plan.md` trong `docs/features/<feature>/tasks/<task>/` của repo) hoặc **AW** (chỉ trong aw). Mặc định REPO để
+   project đang chạy không đổi; chochuyennha bật AW. Thư mục được ghi vào contract của task lúc tạo task; task giữ thư mục đó.
+2. Với AW (thiết kế đã làm, V12-33): node ghi vào thư mục riêng của aw trong worktree, `.aw/features/<feature>/tasks/<task>/`. Khi tạo
+   worktree, aw thêm `/.aw/` vào `info/exclude` của repository, nên git bỏ qua thư mục này: không commit, không tính vi phạm scope, mọi
+   node sau đọc được (không dùng thư mục tạm của attempt vì node sau không đọc được). Để không mất khi worktree bị release, aw **chụp mỗi
+   file vào một artifact ATTACHED** (không hết hạn, giá trị secret đã biết được che) khi một attempt AGENT chạy trong worktree thành công
+   và ngay trước khi job release xóa worktree; giữ bản mới nhất theo (family, repository, đường dẫn). Tab Workspace hiện file trong
+   worktree và bản chụp của file đã mất (worktree đã release thì chỉ còn bản chụp). `check-plan` kiểm plan trong `.aw/` và in nội dung
+   vào output của bước. Nút **Export to repo** ghi tài liệu vào `docs/features/…` của một worktree READY (từ worktree, hoặc từ bản chụp
+   khi file đã mất), chưa commit, để commit theo đường thường.
+3. `02-spec.md`, `03-design.md`, `tasks.json` (tài liệu lâu dài của tính năng) **luôn ở trong repo**.
+
+## 68. Baseline sau review thiết kế
+
+ADR-001…065 là baseline hiện hành. ADR-060…065 (V12 phần D) được product owner duyệt ngày 2026-11-03; phần mã của chúng làm theo
+thứ tự V12-28 … V12-33 (trừ V12-32, chuyển sang V13 ngày 2026-11-04), khối "Kết quả" trong `docs/design/15-v12-ui-operations.md` ghi phần nào đã có. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1396,5 +1813,26 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-060 (V12-28) sửa ADR-014: push nhánh family, PR và merge qua `gh` của máy; cấm push nhánh gốc/force-push; merge khi mọi commit đã qua cổng duyệt và check (nếu có) xanh.
+- ADR-061 (V12-29): kho secret theo repository, mã hóa, khóa theo hệ điều hành (DPAPI/Keychain/Secret Service/file), không vào prompt.
+- ADR-062 (V12-30): chạy ứng dụng của worktree trong `aw worker`, một phiên mỗi hồ sơ, tự tắt 2 giờ.
+- ADR-063 (V12-31): QA là APPROVAL có checklist; Create fix task; script Playwright trong artifact mặc định.
+- ADR-064 (V13, chuyển từ V12-32) sửa ADR-016 cho phiên từ xa qua tunnel (khuyến nghị Tailscale), phạm vi thao tác hẹp, webhook thông báo.
+- ADR-065 (V12-33): nơi lưu frame.md/plan.md chọn theo project (mặc định trong repo; AW: `.aw/` của worktree, git bỏ qua, aw chụp vào artifact).
+- ADR-059 (V12-26): đọc prompt của attempt AGENT bằng cách dựng lại từ ContextSnapshot (không lưu thêm), che secret, tối đa 512 KiB.
+- ADR-058 (V12-25): commit message nhiều dòng, marker là trailer cuối thân, mẫu commit message theo project (bỏ " (lần N)").
+- ADR-057 (V12-23): trang chi phí theo task/đợt/project từ số liệu provider, trần ngân sách theo WorkItem gốc; hàng đợi dừng khi vượt trần hoặc chạm hạn mức provider.
+- ADR-056 (V12-21): giao diện publish manifest bằng cách server chạy `aw-publish.py` của kit trên đường dẫn người vận hành cấu hình lúc khởi động.
+- ADR-055 (V12-20) cho phép fetch nhánh gốc từ `origin` khi người vận hành đồng bộ worktree (chỉ fast-forward, không push); release xóa nhánh worktree đã merge.
+- ADR-054 (V12-19) thêm hàng đợi task của family: worker chạy task kế khi task trước `DONE`, task hỏng làm hàng đợi dừng.
+- ADR-053 (V12-18) cho message có người nhận: `targetNodeKey` (một node) và `nextAttemptOnly` (chỉ attempt kế tiếp, giao một lần, đọc từ snapshot).
+- ADR-052 (V12-16) thêm truy vấn `ListNeedsYou` (cổng duyệt đang chờ và blocker đang mở của project), trang Needs you, bộ đếm và thông báo trình duyệt; kênh ngoài để ADR sau.
+- ADR-051 (V12-11) thêm `resultSummary` cho mỗi activation và `stopReason` có kiểu cho chẩn đoán run.
+- ADR-050 (V12-08): migration kiểm lại dưới khóa ghi (không còn tranh chấp khi bật serve và worker cùng lúc); lệnh `aw up`.
+- ADR-049 (V12-06) cho cạnh escalation của vòng dẫn tới node APPROVAL nằm trong vòng (ngoại lệ hẹp của ADR-036); kit dùng nó cho cổng `size-review`.
+- ADR-048 (V12-05) thêm lệnh `UseNewCli` (đo lại CLI, đăng ký build, publish version ghim build mới, tùy chọn làm lại; không repin run đang chạy); nút Redo lấy từ redo-preview khi thẻ không có run.
+- ADR-047 (V12-04): không đo được CLI là `ADAPTER_PROBE_FAILED` (không phải drift, probe thử lại); worker không spawn được thì không nhận việc; lỗi khởi chạy tiến trình có diagnostic `PROCESS_START_FAILED`; mất đăng nhập chặn node (`PROVIDER_LOGIN_REQUIRED`) và `aw doctor` báo.
+- ADR-046 (V12-03) sửa ADR-035: hết hạn mức của provider làm attempt/NodeRun `BLOCKED` (blocker `PROVIDER_QUOTA_EXCEEDED`), run không hỏng; job `PROVIDER_QUOTA_RESUME` chạy tiếp đúng node sau giờ reset qua `RetryBlockedActivation`; chạy lại có `PARK_ALL`.
+- ADR-045 (V12-01) thêm lý do `EXECUTION_ERROR` kèm `failureDetail` cho local commit mà worker không làm xong (lượt claim cuối hoặc job `DEAD`), và log lỗi handler của worker pool.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

@@ -100,7 +100,7 @@ type RetryWorkItemRequest struct {
 	// Note is the optional message for the agent; it is appended as a USER message before the new run starts, so the run's prompt
 	// carries it. It is also the resolution note recorded on the resolved blockers.
 	Note string
-	// OutOfScope (KEEP or PARK, empty when there was nothing out of scope) and Parked record how the caller settled files a
+	// OutOfScope (KEEP, PARK or PARK_ALL, empty when there was nothing out of scope) and Parked record how the caller settled files a
 	// previous run left outside the WorkItem's scope; see RedoParkedSet.
 	OutOfScope string
 	Parked     []RedoParkedSet
@@ -405,8 +405,15 @@ func RecreateWorkItem(ctx context.Context, deps RedoDeps, cmd ports.Command, req
 			if err != nil {
 				return err
 			}
+			// V12-18: a next-attempt-only message an attempt already got is spent; it is not carried over.
+			var delivered map[string]bool
+			if appmessage.HasNextAttemptOnly(messages) {
+				if delivered, err = appmessage.DeliveredMessageIDs(ctx, tx, workItemID); err != nil {
+					return err
+				}
+			}
 			for _, m := range messages {
-				if m.Role != message.RoleUser {
+				if m.Role != message.RoleUser || (m.NextAttemptOnly && delivered[string(m.ID)]) {
 					continue
 				}
 				if _, err := appmessage.CopyMessageTx(ctx, tx, deps.IDs, subCommand(cmd, fmt.Sprintf("carry-%d", carried)), m, created.WorkItemID); err != nil {

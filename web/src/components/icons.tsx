@@ -3,6 +3,7 @@
 // labelled button or add aria-label where needed.
 export {
   Activity,
+  Coins,
   AlertTriangle,
   Ban,
   CheckCircle2,

@@ -183,7 +183,7 @@ func TestRun_EvidenceVerify_TamperedBundleFails(t *testing.T) {
 // the process-level commands below plus every resource clicompose routes
 // (the usage text lists those straight from the routing table).
 func TestRun_AllSubcommandsAreWiredAtCompositionRootOnly(t *testing.T) {
-	want := []string{"serve", "worker", "version"}
+	want := []string{"serve", "worker", "up", "version"}
 	if len(subcommands) != len(want) {
 		t.Fatalf("subcommands has %d entries, want %d: %v", len(subcommands), len(want), subcommands)
 	}

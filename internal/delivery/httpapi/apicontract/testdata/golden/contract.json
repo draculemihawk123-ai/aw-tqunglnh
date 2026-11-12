@@ -203,6 +203,16 @@
             "name": "Pinned",
             "jsonTag": "pinned,omitempty",
             "type": "bool"
+          },
+          {
+            "name": "TargetNodeKey",
+            "jsonTag": "targetNodeKey,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "NextAttemptOnly",
+            "jsonTag": "nextAttemptOnly,omitempty",
+            "type": "bool"
           }
         ]
       },
@@ -661,6 +671,122 @@
       }
     },
     {
+      "operationId": "createWorkspacePullRequest",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "httpapi.createPullRequestBody",
+        "fields": [
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "Body",
+            "jsonTag": "body,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Draft",
+            "jsonTag": "draft,omitempty",
+            "type": "bool"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "ports.PullRequest",
+        "fields": [
+          {
+            "name": "Number",
+            "jsonTag": "number",
+            "type": "int"
+          },
+          {
+            "name": "URL",
+            "jsonTag": "url",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Draft",
+            "jsonTag": "draft",
+            "type": "bool"
+          },
+          {
+            "name": "HeadSHA",
+            "jsonTag": "headSha",
+            "type": "string"
+          },
+          {
+            "name": "Base",
+            "jsonTag": "base",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "Mergeable",
+            "jsonTag": "mergeable,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Checks",
+            "jsonTag": "checks",
+            "type": "[]ports.ForgeCheck"
+          },
+          {
+            "name": "MergedAt",
+            "jsonTag": "mergedAt,omitempty",
+            "type": "*time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "deleteRepositorySecret",
+      "method": "POST",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/secrets/{name}/delete",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "secretstore.SetResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Names",
+            "jsonTag": "names",
+            "type": "[]string"
+          },
+          {
+            "name": "Removed",
+            "jsonTag": "removed,omitempty",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "diffDefinitionVersions",
       "method": "GET",
       "path": "/definitions/versions/diff",
@@ -761,6 +887,47 @@
             "name": "Links",
             "jsonTag": "links",
             "type": "map[string]string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "exportAwDocuments",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents/export",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "awdocuments.ExportRequest",
+        "fields": [
+          {
+            "name": "Overwrite",
+            "jsonTag": "overwrite,omitempty",
+            "type": "bool"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "awdocuments.ExportResult",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "Exported",
+            "jsonTag": "exported",
+            "type": "[]string"
+          },
+          {
+            "name": "Unchanged",
+            "jsonTag": "unchanged",
+            "type": "[]string"
+          },
+          {
+            "name": "Conflicts",
+            "jsonTag": "conflicts",
+            "type": "[]string"
           }
         ]
       }
@@ -885,6 +1052,61 @@
       }
     },
     {
+      "operationId": "getAttemptPrompt",
+      "method": "GET",
+      "path": "/projects/{projectId}/execution-attempts/{attemptId}/prompt",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.AttemptPrompt",
+        "fields": [
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId",
+            "type": "string"
+          },
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "NodeKey",
+            "jsonTag": "nodeKey",
+            "type": "string"
+          },
+          {
+            "name": "ContextSnapshotID",
+            "jsonTag": "contextSnapshotId",
+            "type": "string"
+          },
+          {
+            "name": "Prompt",
+            "jsonTag": "prompt",
+            "type": "string"
+          },
+          {
+            "name": "Bytes",
+            "jsonTag": "bytes",
+            "type": "int"
+          },
+          {
+            "name": "Truncated",
+            "jsonTag": "truncated,omitempty",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getContextSnapshot",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/context-snapshots/{snapshotId}",
@@ -1005,6 +1227,46 @@
             "name": "Version",
             "jsonTag": "version",
             "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getDefinitionManifest",
+      "method": "GET",
+      "path": "/projects/{projectId}/definition-manifest",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "ports.ManifestStatus",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Configured",
+            "jsonTag": "configured",
+            "type": "bool"
+          },
+          {
+            "name": "ManifestPath",
+            "jsonTag": "manifestPath,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ScriptPath",
+            "jsonTag": "scriptPath,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "LastRun",
+            "jsonTag": "lastRun,omitempty",
+            "type": "*ports.ManifestRun"
           }
         ]
       }
@@ -1419,6 +1681,76 @@
       }
     },
     {
+      "operationId": "getProjectCommitTemplate",
+      "method": "GET",
+      "path": "/projects/{id}/commit-template",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "catalog.CommitTemplateView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Template",
+            "jsonTag": "template",
+            "type": "string"
+          },
+          {
+            "name": "Default",
+            "jsonTag": "default",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getProjectCosts",
+      "method": "GET",
+      "path": "/projects/{projectId}/costs",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.ProjectCosts",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Usage",
+            "jsonTag": "usage",
+            "type": "runtime.UsageView"
+          },
+          {
+            "name": "Batches",
+            "jsonTag": "batches",
+            "type": "[]runtime.BatchCost"
+          },
+          {
+            "name": "ProviderLimits",
+            "jsonTag": "providerLimits",
+            "type": "[]runtime.ProviderLimit"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getProjectDefinition",
       "method": "GET",
       "path": "/projects/{projectId}/definitions/{kind}/{id}",
@@ -1539,6 +1871,41 @@
             "name": "Warnings",
             "jsonTag": "warnings,omitempty",
             "type": "[]string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getProjectTaskDocuments",
+      "method": "GET",
+      "path": "/projects/{id}/task-documents",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "catalog.TaskDocumentsView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Location",
+            "jsonTag": "location",
+            "type": "string"
+          },
+          {
+            "name": "DirectoryPattern",
+            "jsonTag": "directoryPattern",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
           }
         ]
       }
@@ -1766,6 +2133,11 @@
             "type": "string"
           },
           {
+            "name": "FailureDetail",
+            "jsonTag": "failureDetail,omitempty",
+            "type": "string"
+          },
+          {
             "name": "JobID",
             "jsonTag": "jobId",
             "type": "string"
@@ -1859,6 +2231,96 @@
             "name": "ValidActions",
             "jsonTag": "validActions",
             "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRunAppProfile",
+      "method": "GET",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/run-app",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.ProfileView",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Profile",
+            "jsonTag": "profile,omitempty",
+            "type": "*runapp.Profile"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedBy",
+            "jsonTag": "updatedBy,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt,omitempty",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRunAppStatus",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.Status",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "WorkspaceState",
+            "jsonTag": "workspaceState",
+            "type": "string"
+          },
+          {
+            "name": "Profile",
+            "jsonTag": "profile",
+            "type": "runapp.ProfileView"
+          },
+          {
+            "name": "Session",
+            "jsonTag": "session,omitempty",
+            "type": "*runapp.SessionView"
+          },
+          {
+            "name": "Logs",
+            "jsonTag": "logs",
+            "type": "[]runapp.ProcessLog"
+          },
+          {
+            "name": "StartBlockers",
+            "jsonTag": "startBlockers",
+            "type": "[]string"
           }
         ]
       }
@@ -2034,6 +2496,11 @@
             "name": "RepositoryWorkspaces",
             "jsonTag": "repositoryWorkspaces",
             "type": "[]diagnostics.repositoryWorkspaceDiagResponse"
+          },
+          {
+            "name": "StopReason",
+            "jsonTag": "stopReason,omitempty",
+            "type": "*runtime.StopReason"
           },
           {
             "name": "ValidActions",
@@ -2389,6 +2856,11 @@
             "name": "Contract",
             "jsonTag": "contract,omitempty",
             "type": "*work.WorkItemContractView"
+          },
+          {
+            "name": "EffectiveScope",
+            "jsonTag": "effectiveScope,omitempty",
+            "type": "[]work.EffectiveScopeView"
           }
         ]
       }
@@ -2429,6 +2901,41 @@
             "name": "ValidActions",
             "jsonTag": "validActions",
             "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkItemQueue",
+      "method": "GET",
+      "path": "/work-items/{workItemId}/queue",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "redo.QueueResponse",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "Entries",
+            "jsonTag": "entries",
+            "type": "[]runtime.QueueEntryView"
+          },
+          {
+            "name": "Waiting",
+            "jsonTag": "waiting,omitempty",
+            "type": "string"
           }
         ]
       }
@@ -2604,6 +3111,66 @@
       }
     },
     {
+      "operationId": "getWorkspaceBaseStatus",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/base-status",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "ports.BaseSyncResult",
+        "fields": [
+          {
+            "name": "BaseRef",
+            "jsonTag": "baseRef",
+            "type": "string"
+          },
+          {
+            "name": "BaseRevision",
+            "jsonTag": "baseRevision",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "Outcome",
+            "jsonTag": "outcome,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Merged",
+            "jsonTag": "merged",
+            "type": "bool"
+          },
+          {
+            "name": "Ahead",
+            "jsonTag": "ahead",
+            "type": "int"
+          },
+          {
+            "name": "Behind",
+            "jsonTag": "behind",
+            "type": "int"
+          },
+          {
+            "name": "Fetched",
+            "jsonTag": "fetched",
+            "type": "bool"
+          },
+          {
+            "name": "FetchProblem",
+            "jsonTag": "fetchProblem,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getWorkspaceDiff",
       "method": "GET",
       "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff",
@@ -2669,6 +3236,91 @@
             "name": "ChangeSetDigest",
             "jsonTag": "changeSetDigest,omitempty",
             "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkspaceRemote",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/remote",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "forgerelease.RemoteView",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "BaseBranch",
+            "jsonTag": "baseBranch",
+            "type": "string"
+          },
+          {
+            "name": "RemoteURL",
+            "jsonTag": "remoteUrl,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "RemoteBranch",
+            "jsonTag": "remoteBranch",
+            "type": "string"
+          },
+          {
+            "name": "SuggestedBranch",
+            "jsonTag": "suggestedBranch",
+            "type": "string"
+          },
+          {
+            "name": "Pushed",
+            "jsonTag": "pushed",
+            "type": "bool"
+          },
+          {
+            "name": "PushedRevision",
+            "jsonTag": "pushedRevision,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "UnapprovedCommits",
+            "jsonTag": "unapprovedCommits",
+            "type": "[]string"
+          },
+          {
+            "name": "PullRequest",
+            "jsonTag": "pullRequest,omitempty",
+            "type": "*ports.PullRequest"
+          },
+          {
+            "name": "NoChecks",
+            "jsonTag": "noChecks",
+            "type": "bool"
+          },
+          {
+            "name": "MergeBlockers",
+            "jsonTag": "mergeBlockers",
+            "type": "[]string"
+          },
+          {
+            "name": "MergedRevision",
+            "jsonTag": "mergedRevision,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
           }
         ]
       }
@@ -2906,6 +3558,36 @@
       }
     },
     {
+      "operationId": "listAwDocuments",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/aw-documents",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "awdocuments.List",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "WorkspaceState",
+            "jsonTag": "workspaceState",
+            "type": "string"
+          },
+          {
+            "name": "Documents",
+            "jsonTag": "documents",
+            "type": "[]ports.AwDocument"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "listChildWorkItems",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/children",
@@ -3031,6 +3713,36 @@
       }
     },
     {
+      "operationId": "listNeedsYou",
+      "method": "GET",
+      "path": "/projects/{projectId}/needs-you",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.NeedsYou",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Count",
+            "jsonTag": "count",
+            "type": "int"
+          },
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]runtime.NeedsYouItem"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "listProjectDefinitionVersions",
       "method": "GET",
       "path": "/projects/{projectId}/definitions/{kind}/{id}/versions",
@@ -3086,6 +3798,36 @@
             "name": "Items",
             "jsonTag": "items",
             "type": "[]work.ReleaseSetDetail"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listRepositorySecrets",
+      "method": "GET",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/secrets",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "secretstore.SecretList",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Protection",
+            "jsonTag": "protection",
+            "type": "string"
+          },
+          {
+            "name": "Secrets",
+            "jsonTag": "secrets",
+            "type": "[]secretstore.SecretName"
           }
         ]
       }
@@ -3175,6 +3917,57 @@
             "name": "Version",
             "jsonTag": "version",
             "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "mergeWorkspacePullRequest",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request/merge",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "httpapi.mergePullRequestBody",
+        "fields": [
+          {
+            "name": "Method",
+            "jsonTag": "method,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "AcknowledgeNoChecks",
+            "jsonTag": "acknowledgeNoChecks,omitempty",
+            "type": "bool"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "forgerelease.MergeResult",
+        "fields": [
+          {
+            "name": "Number",
+            "jsonTag": "number",
+            "type": "int"
+          },
+          {
+            "name": "URL",
+            "jsonTag": "url",
+            "type": "string"
+          },
+          {
+            "name": "Method",
+            "jsonTag": "method",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "NoChecks",
+            "jsonTag": "noChecks",
+            "type": "bool"
           }
         ]
       }
@@ -3718,6 +4511,42 @@
             "name": "Warnings",
             "jsonTag": "warnings,omitempty",
             "type": "[]string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "pushWorkspaceBranch",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/push",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "httpapi.pushBranchBody",
+        "fields": [
+          {
+            "name": "RemoteBranch",
+            "jsonTag": "remoteBranch,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "forgerelease.PushResult",
+        "fields": [
+          {
+            "name": "RemoteBranch",
+            "jsonTag": "remoteBranch",
+            "type": "string"
+          },
+          {
+            "name": "Pushed",
+            "jsonTag": "pushed",
+            "type": "string"
+          },
+          {
+            "name": "Created",
+            "jsonTag": "created",
+            "type": "bool"
           }
         ]
       }
@@ -4521,6 +5350,11 @@
             "name": "Commit",
             "jsonTag": "commit,omitempty",
             "type": "*decision.ResolveApprovalCommitBody"
+          },
+          {
+            "name": "Checklist",
+            "jsonTag": "checklist,omitempty",
+            "type": "[]runtime.ChecklistItemResult"
           }
         ]
       },
@@ -4805,6 +5639,62 @@
       }
     },
     {
+      "operationId": "runDefinitionManifest",
+      "method": "POST",
+      "path": "/projects/{projectId}/definition-manifest/run",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "manifest.RunRequest",
+        "fields": [
+          {
+            "name": "Mode",
+            "jsonTag": "mode",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "ports.ManifestRun",
+        "fields": [
+          {
+            "name": "Mode",
+            "jsonTag": "mode",
+            "type": "string"
+          },
+          {
+            "name": "ExitCode",
+            "jsonTag": "exitCode",
+            "type": "int"
+          },
+          {
+            "name": "Succeeded",
+            "jsonTag": "succeeded",
+            "type": "bool"
+          },
+          {
+            "name": "Output",
+            "jsonTag": "output",
+            "type": "string"
+          },
+          {
+            "name": "Truncated",
+            "jsonTag": "truncated,omitempty",
+            "type": "bool"
+          },
+          {
+            "name": "StartedAt",
+            "jsonTag": "startedAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "DurationMs",
+            "jsonTag": "durationMs",
+            "type": "int64"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "sealReleaseSet",
       "method": "POST",
       "path": "/projects/{projectId}/release-sets/{releaseSetId}/seal",
@@ -4838,6 +5728,382 @@
           {
             "name": "ContentHash",
             "jsonTag": "contentHash",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setProjectCommitTemplate",
+      "method": "POST",
+      "path": "/projects/{id}/commit-template",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.commitTemplateRequestBody",
+        "fields": [
+          {
+            "name": "Template",
+            "jsonTag": "template",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "catalog.CommitTemplateView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Template",
+            "jsonTag": "template",
+            "type": "string"
+          },
+          {
+            "name": "Default",
+            "jsonTag": "default",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setProjectTaskDocuments",
+      "method": "POST",
+      "path": "/projects/{id}/task-documents",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.taskDocumentsRequestBody",
+        "fields": [
+          {
+            "name": "Location",
+            "jsonTag": "location",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "catalog.TaskDocumentsView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Location",
+            "jsonTag": "location",
+            "type": "string"
+          },
+          {
+            "name": "DirectoryPattern",
+            "jsonTag": "directoryPattern",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setRepositorySecrets",
+      "method": "POST",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/secrets",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "secrets.SetRequest",
+        "fields": [
+          {
+            "name": "Values",
+            "jsonTag": "values,omitempty",
+            "type": "map[string]string"
+          },
+          {
+            "name": "DotEnv",
+            "jsonTag": "dotEnv,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "secretstore.SetResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Names",
+            "jsonTag": "names",
+            "type": "[]string"
+          },
+          {
+            "name": "Removed",
+            "jsonTag": "removed,omitempty",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setRunAppProfile",
+      "method": "POST",
+      "path": "/projects/{projectId}/repositories/{repositoryId}/run-app",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "runapp.SetProfileRequest",
+        "fields": [
+          {
+            "name": "Profile",
+            "jsonTag": "profile",
+            "type": "runapp.Profile"
+          },
+          {
+            "name": "ExpectedVersion",
+            "jsonTag": "expectedVersion",
+            "type": "uint64"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "runapp.ProfileView",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Profile",
+            "jsonTag": "profile,omitempty",
+            "type": "*runapp.Profile"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedBy",
+            "jsonTag": "updatedBy,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt,omitempty",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setWorkItemBudget",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/budget",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.SetBudgetRequest",
+        "fields": [
+          {
+            "name": "BudgetUSD",
+            "jsonTag": "budgetUsd,omitempty",
+            "type": "*float64"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "runtime.BudgetView",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "BudgetUSD",
+            "jsonTag": "budgetUsd,omitempty",
+            "type": "*float64"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setWorkItemQueue",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/queue",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.SetQueueRequest",
+        "fields": [
+          {
+            "name": "Queued",
+            "jsonTag": "queued",
+            "type": "bool"
+          },
+          {
+            "name": "Position",
+            "jsonTag": "position,omitempty",
+            "type": "*int"
+          },
+          {
+            "name": "WaitsForWorkItemID",
+            "jsonTag": "waitsForWorkItemId,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "redo.SetQueueResponse",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemTitle",
+            "jsonTag": "workItemTitle",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemStatus",
+            "jsonTag": "workItemStatus",
+            "type": "string"
+          },
+          {
+            "name": "Position",
+            "jsonTag": "position",
+            "type": "int"
+          },
+          {
+            "name": "WaitsForWorkItemID",
+            "jsonTag": "waitsForWorkItemId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Problem",
+            "jsonTag": "problem,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "startRunApp",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/start",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.SessionView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Active",
+            "jsonTag": "active",
+            "type": "bool"
+          },
+          {
+            "name": "ProfileVersion",
+            "jsonTag": "profileVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "RequestedBy",
+            "jsonTag": "requestedBy",
+            "type": "string"
+          },
+          {
+            "name": "WorkerID",
+            "jsonTag": "workerId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "DeadlineAt",
+            "jsonTag": "deadlineAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "StartedAt",
+            "jsonTag": "startedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "EndedAt",
+            "jsonTag": "endedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "Problem",
+            "jsonTag": "problem,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "RepositoryWsID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
             "type": "string"
           },
           {
@@ -4924,6 +6190,91 @@
       }
     },
     {
+      "operationId": "stopRunApp",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/run-app/stop",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runapp.SessionView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Active",
+            "jsonTag": "active",
+            "type": "bool"
+          },
+          {
+            "name": "ProfileVersion",
+            "jsonTag": "profileVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "RequestedBy",
+            "jsonTag": "requestedBy",
+            "type": "string"
+          },
+          {
+            "name": "WorkerID",
+            "jsonTag": "workerId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "DeadlineAt",
+            "jsonTag": "deadlineAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "StartedAt",
+            "jsonTag": "startedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "EndedAt",
+            "jsonTag": "endedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "Problem",
+            "jsonTag": "problem,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "RepositoryWsID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "submitWaitSignal",
       "method": "POST",
       "path": "/runs/{runId}/wait-registrations/{waitRegistrationId}/signal",
@@ -4980,6 +6331,41 @@
             "name": "ValidActions",
             "jsonTag": "validActions",
             "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "syncWorkspaceWithBase",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/sync-base",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workspacereconcile.SyncWorkspaceWithBaseResult",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "Sync",
+            "jsonTag": "sync",
+            "type": "ports.BaseSyncResult"
+          },
+          {
+            "name": "Adopted",
+            "jsonTag": "adopted,omitempty",
+            "type": "*workspacereconcile.AdoptWorkspaceHeadResult"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
           }
         ]
       }
@@ -5068,6 +6454,87 @@
             "name": "Effective",
             "jsonTag": "effective",
             "type": "safesettings.effectiveWire"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "useNewCli",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/use-new-cli",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.UseNewCLIRequest",
+        "fields": [
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "Redo",
+            "jsonTag": "redo,omitempty",
+            "type": "bool"
+          },
+          {
+            "name": "Reason",
+            "jsonTag": "reason,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "OutOfScope",
+            "jsonTag": "outOfScope,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "redo.UseNewCLIResponse",
+        "fields": [
+          {
+            "name": "PreviousAdapterBuildID",
+            "jsonTag": "previousAdapterBuildId",
+            "type": "string"
+          },
+          {
+            "name": "AdapterBuildID",
+            "jsonTag": "adapterBuildId",
+            "type": "string"
+          },
+          {
+            "name": "AdapterBuildExisted",
+            "jsonTag": "adapterBuildExisted",
+            "type": "bool"
+          },
+          {
+            "name": "WorkflowDefinitionID",
+            "jsonTag": "workflowDefinitionId",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionID",
+            "jsonTag": "workflowVersionId",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionNumber",
+            "jsonTag": "workflowVersionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "RepinnedNodes",
+            "jsonTag": "repinnedNodes",
+            "type": "[]string"
+          },
+          {
+            "name": "NewWorkItemID",
+            "jsonTag": "newWorkItemId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "NextStep",
+            "jsonTag": "nextStep,omitempty",
+            "type": "string"
           }
         ]
       }

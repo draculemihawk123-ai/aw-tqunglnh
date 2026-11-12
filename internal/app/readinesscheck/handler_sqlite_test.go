@@ -10,6 +10,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/readinesscheck"
@@ -33,7 +34,7 @@ import (
 
 func openReadinessCheckTestStore(t *testing.T, name string) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, name))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

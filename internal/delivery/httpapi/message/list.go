@@ -63,7 +63,7 @@ func handleListMessages(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		all, err := appmessage.ListMessages(ctx, deps.UnitOfWork, workItemID)
+		all, delivered, err := appmessage.ListMessagesWithDelivery(ctx, deps.UnitOfWork, workItemID)
 		if err != nil {
 			writeQueryError(w, err)
 			return
@@ -137,7 +137,9 @@ func handleListMessages(deps Dependencies) http.HandlerFunc {
 		page := candidates[:pageCount]
 		items := make([]messageRefDTO, 0, len(page))
 		for _, m := range page {
-			items = append(items, messageToRefDTO(m))
+			dto := messageToRefDTO(m)
+			dto.Delivered = m.NextAttemptOnly && delivered[string(m.ID)]
+			items = append(items, dto)
 		}
 
 		response := listMessagesResponse{Items: items}

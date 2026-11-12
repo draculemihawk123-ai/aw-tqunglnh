@@ -2,10 +2,10 @@ package workspacestate_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspacestate"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -20,7 +20,7 @@ import (
 // for exactly why real sqlite is required for this proof).
 func newStateTestStore(t *testing.T) (*sqlite.Store, ports.UnitOfWork) {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "workspacestate.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "workspacestate.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

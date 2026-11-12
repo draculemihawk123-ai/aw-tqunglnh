@@ -117,61 +117,7 @@ func AssembleAgentExecutionRequest(
 		return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: AssembleAgentExecutionRequest requires RunID, NodeRunID and AttemptID")
 	}
 
-	var gathered assembledRequestInputs
-	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
-		var err error
-		gathered, err = gatherAssembledRequestInputs(ctx, tx, req)
-		return err
-	})
-	if err != nil {
-		return ports.AgentExecutionRequest{}, err
-	}
-
-	// Phase 2: real I/O, entirely outside the transaction above.
-	input := instructionRenderInput{
-		workItemID: gathered.workItemID, title: gathered.workItemTitle, behavior: gathered.workItemBehavior,
-		acceptanceCriteria: gathered.workItemAcceptanceCriteria, verificationSpec: gathered.workItemVerificationSpec,
-		riskLevel: gathered.workItemRiskLevel, allowedOutcomes: gathered.allowedOutcomes,
-		omittedMessages: gathered.omittedMessages,
-	}
-	for _, m := range gathered.messages {
-		body, err := readArtifact(ctx, store, m.ref)
-		if err != nil {
-			return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: open message %s content artifact: %w", m.messageID, err)
-		}
-		input.messages = append(input.messages, instructionMessage{MessageID: m.messageID, Role: m.role, Content: body})
-	}
-	if len(gathered.checkFailures) > 0 {
-		input.checkFailures, err = renderCheckFailures(ctx, store, gathered.checkFailures)
-		if err != nil {
-			return ports.AgentExecutionRequest{}, err
-		}
-	}
-	if len(gathered.reviewerFeedback) > 0 {
-		input.reviewerFeedback, err = renderReviewerFeedback(ctx, store, gathered.reviewerFeedback)
-		if err != nil {
-			return ports.AgentExecutionRequest{}, err
-		}
-	}
-	for _, r := range gathered.resources {
-		input.resources = append(input.resources, instructionResourceInput{
-			ownerVersionID: r.Identity.OwnerVersionID, resourceKey: r.Identity.ResourceKey, contentHash: r.Identity.ContentHash,
-			priority: r.Priority, content: string(r.Payload),
-		})
-	}
-
-	// V9-03 (ADR-032 decision 2): the snapshot, not this build, says which
-	// schema renders it. A snapshot that recorded none is v1 and renders
-	// exactly as it always has.
-	var contentJSON []byte
-	switch gathered.instructionSchema {
-	case contextsnapshot.InstructionSchemaV1:
-		contentJSON, err = renderInstructionV1(input)
-	case contextsnapshot.InstructionSchemaV2:
-		contentJSON, err = renderInstructionV2(input)
-	default:
-		err = fmt.Errorf("runtime: snapshot %s records instruction schema version %d, which this build cannot render", gathered.snapshotID, gathered.instructionSchema)
-	}
+	gathered, contentJSON, err := renderAttemptInstruction(ctx, uow, store, req)
 	if err != nil {
 		return ports.AgentExecutionRequest{}, err
 	}
@@ -626,4 +572,71 @@ func assembleWorkspaceMounts(scope []workdomain.RepositoryScope, revisions []wor
 	}
 	sort.Slice(mounts, func(i, j int) bool { return mounts[i].RepositoryID < mounts[j].RepositoryID })
 	return mounts
+}
+
+// renderAttemptInstruction (V12-26) gathers an attempt's pinned inputs and renders its instruction (the prompt) — deterministic from
+// the attempt's context snapshot, so AssembleAgentExecutionRequest (which then stores it) and ReadAttemptPrompt (which only shows it)
+// produce the same bytes.
+func renderAttemptInstruction(
+	ctx context.Context, uow ports.UnitOfWork, store ports.ArtifactStore, req AssembleAgentExecutionRequestRequest,
+) (assembledRequestInputs, []byte, error) {
+	var gathered assembledRequestInputs
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		gathered, err = gatherAssembledRequestInputs(ctx, tx, req)
+		return err
+	})
+	if err != nil {
+		return assembledRequestInputs{}, nil, err
+	}
+
+	// Phase 2: real I/O, entirely outside the transaction above.
+	input := instructionRenderInput{
+		workItemID: gathered.workItemID, title: gathered.workItemTitle, behavior: gathered.workItemBehavior,
+		acceptanceCriteria: gathered.workItemAcceptanceCriteria, verificationSpec: gathered.workItemVerificationSpec,
+		riskLevel: gathered.workItemRiskLevel, allowedOutcomes: gathered.allowedOutcomes,
+		omittedMessages: gathered.omittedMessages,
+	}
+	for _, m := range gathered.messages {
+		body, err := readArtifact(ctx, store, m.ref)
+		if err != nil {
+			return assembledRequestInputs{}, nil, fmt.Errorf("runtime: open message %s content artifact: %w", m.messageID, err)
+		}
+		input.messages = append(input.messages, instructionMessage{MessageID: m.messageID, Role: m.role, Content: body})
+	}
+	if len(gathered.checkFailures) > 0 {
+		input.checkFailures, err = renderCheckFailures(ctx, store, gathered.checkFailures)
+		if err != nil {
+			return assembledRequestInputs{}, nil, err
+		}
+	}
+	if len(gathered.reviewerFeedback) > 0 {
+		input.reviewerFeedback, err = renderReviewerFeedback(ctx, store, gathered.reviewerFeedback)
+		if err != nil {
+			return assembledRequestInputs{}, nil, err
+		}
+	}
+	for _, r := range gathered.resources {
+		input.resources = append(input.resources, instructionResourceInput{
+			ownerVersionID: r.Identity.OwnerVersionID, resourceKey: r.Identity.ResourceKey, contentHash: r.Identity.ContentHash,
+			priority: r.Priority, content: string(r.Payload),
+		})
+	}
+
+	// V9-03 (ADR-032 decision 2): the snapshot, not this build, says which
+	// schema renders it. A snapshot that recorded none is v1 and renders
+	// exactly as it always has.
+	var contentJSON []byte
+	switch gathered.instructionSchema {
+	case contextsnapshot.InstructionSchemaV1:
+		contentJSON, err = renderInstructionV1(input)
+	case contextsnapshot.InstructionSchemaV2:
+		contentJSON, err = renderInstructionV2(input)
+	default:
+		err = fmt.Errorf("runtime: snapshot %s records instruction schema version %d, which this build cannot render", gathered.snapshotID, gathered.instructionSchema)
+	}
+	if err != nil {
+		return assembledRequestInputs{}, nil, err
+	}
+	return gathered, contentJSON, nil
 }

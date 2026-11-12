@@ -6,6 +6,8 @@
 #                WAIT_SECONDS (mặc định 2700) thời gian chờ tối đa, xem watch-run.sh.
 # Run FAILED thì chạy lại trên chính WorkItem đó bằng retry-task.sh, không tạo WorkItem mới.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 file=$1 workflow=$2
@@ -13,6 +15,16 @@ project_id=$(jq -er '.projectId' "$AW_STATE")
 root=$(jq -er '.root.workItemId' "$AW_STATE")
 wf=$(jq -er --arg w "$workflow" '.definitions.WORKFLOW[$w].versionId // error("aw-state.json không có workflow \($w) — đã chạy aw-publish.py chưa?")' "$AW_STATE")
 body=$(jq --arg wf "$wf" '.contract.workflowVersionId = $wf' "$file")
+# V12-02: node `sync` của wf-task-delivery(-plus) chạy SAU cổng duyệt và chỉ được ghi docs/. Scope WRITE có pathScopes
+# mà thiếu docs thì sync ghi frame.md/ADR là SCOPE_VIOLATION, cả run FAILED dù code đã được duyệt. Thêm docs vào scope
+# (như split-tasks.sh đã làm); NO_SYNC_DOCS=1 để giữ nguyên contract.
+case "$workflow" in
+  *task-delivery*)
+    if [ -z "${NO_SYNC_DOCS:-}" ]; then
+      body=$(jq '.effectiveScope |= map(if .access == "WRITE" and ((.pathScopes // []) | length) > 0
+                                          then .pathScopes = ((.pathScopes + ["docs"]) | unique) else . end)' <<<"$body")
+    fi ;;
+esac
 # Idempotency key gắn với nội dung + workflow version: chạy lại y nguyên sẽ replay; sửa contract
 # hoặc publish workflow mới sẽ tạo WorkItem mới.
 key=$(printf '%s|%s' "$root" "$body" | sha256sum | cut -c1-16)

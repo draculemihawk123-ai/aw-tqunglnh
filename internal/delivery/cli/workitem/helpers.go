@@ -71,7 +71,7 @@ func usageErrorf(format string, args ...any) error {
 // cli.UsageError — mirroring internal/delivery/cli/catalog/helpers.go's own
 // identical helper.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return err
 		}

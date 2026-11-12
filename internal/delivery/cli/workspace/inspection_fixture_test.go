@@ -20,6 +20,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	cliworkspace "github.com/taQuangLing/agent-workflow/internal/delivery/cli/workspace"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
@@ -80,7 +81,7 @@ func newInspectionTestEnv(t *testing.T, initialState workspace.RepositoryWorkspa
 		t.Fatalf("Inspect: %v", err)
 	}
 
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "ws-inspect-cli.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "ws-inspect-cli.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

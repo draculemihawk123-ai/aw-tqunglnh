@@ -139,6 +139,8 @@ type ResolveApprovalRequest struct {
 	// of the worktree's changes for the repositories it names. The approval node's release policy
 	// decides whether it is allowed for Outcome; nil means no commit.
 	Commit *ApprovalCommit
+	// Checklist (V12-31, ADR-063) is the result of every item of a checklist approval; required for one, refused for any other.
+	Checklist []ChecklistItemResult
 }
 
 // ApprovalCommit is the commit a decision carries.
@@ -259,7 +261,12 @@ func ResolveApproval(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sou
 		if request.State == runtimedomain.ApprovalRequestPending {
 			// V11-07: the release policy and the author identity are checked BEFORE anything is
 			// written, so a refused commit leaves the gate PENDING and the run untouched.
-			if err := checkApprovalCommit(ctx, tx, request, req); err != nil {
+			node, run, err := checkApprovalCommit(ctx, tx, request, req)
+			if err != nil {
+				return err
+			}
+			checklist, err := checkApprovalChecklist(ctx, tx, node, run, req)
+			if err != nil {
 				return err
 			}
 			updated, casErr := tx.Approvals().TransitionApprovalRequest(ctx, ports.TransitionApprovalRequestRequest{
@@ -279,6 +286,11 @@ func ResolveApproval(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sou
 				result = ResolveApprovalResult{
 					ApprovalRequestID: req.ApprovalRequestID, State: string(updated.State), Won: true, MatchedRole: matchedRole,
 					Advanced: advanceResult.Advanced, NextNodeRunID: advanceResult.NextNodeRunID, NextNodeKey: advanceResult.NextNodeKey,
+				}
+				if checklist != nil {
+					if err := storeApprovalChecklist(ctx, tx, cmd, request, checklist); err != nil {
+						return err
+					}
 				}
 				if req.Commit != nil {
 					if err := requestApprovalCommitTx(ctx, tx, ids, cmd, request, req, &result); err != nil {
@@ -340,19 +352,23 @@ func MatchAuthorizedRole(actorRoles, authorizedRoles []string) string {
 
 // checkApprovalCommit enforces the approval node's release policy for this decision (V11-07).
 // It runs inside the decision's transaction, before the decision is written.
-func checkApprovalCommit(ctx context.Context, tx ports.Tx, request runtimedomain.ApprovalRequest, req ResolveApprovalRequest) error {
+func checkApprovalCommit(ctx context.Context, tx ports.Tx, request runtimedomain.ApprovalRequest, req ResolveApprovalRequest) (workflow.Node, runtimedomain.WorkflowRun, error) {
 	run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
 	if err != nil {
-		return err
+		return workflow.Node{}, runtimedomain.WorkflowRun{}, err
 	}
 	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
 	if err != nil {
-		return err
+		return workflow.Node{}, runtimedomain.WorkflowRun{}, err
 	}
 	node, ok := findNode(version.Document(), request.NodeKey)
 	if !ok || node.Approval == nil {
-		return fmt.Errorf("runtime: approval node %s not found in workflow version %s", request.NodeKey, run.WorkflowVersionID)
+		return workflow.Node{}, runtimedomain.WorkflowRun{}, fmt.Errorf("runtime: approval node %s not found in workflow version %s", request.NodeKey, run.WorkflowVersionID)
 	}
+	return node, run, checkApprovalCommitPolicy(node, req)
+}
+
+func checkApprovalCommitPolicy(node workflow.Node, req ResolveApprovalRequest) error {
 	policy := node.Approval.Release
 	allowed := policy.AllowsCommitOn(req.Outcome)
 	switch {

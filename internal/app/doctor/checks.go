@@ -16,6 +16,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
+	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // CheckLiveness always reports HEALTHY: the mere fact this function ran
@@ -248,6 +249,37 @@ func CheckSafeSettings(ctx context.Context, uow ports.UnitOfWork) CheckResult {
 	return CheckResult{
 		Name: "safe_settings", Category: CategoryReadiness, Status: StatusHealthy,
 		Detail: "persisted safe settings desired document decodes cleanly",
+	}
+}
+
+// CheckProviderLogin (V12-04, UX-07) reports DEGRADED while an attempt is waiting because its provider CLI said it is not signed
+// in (an OPEN PROVIDER_LOGIN_REQUIRED blocker). Before, `aw doctor` stayed HEALTHY with an expired Claude session and the cause
+// showed only when an attempt failed. aw cannot ask a CLI whether it is signed in without spending a request, so this reads what
+// the last attempts observed; a clean report means no attempt has found the CLI signed out since its last retry.
+func CheckProviderLogin(ctx context.Context, uow ports.UnitOfWork) CheckResult {
+	var open []work.WorkItemBlocker
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		open, err = tx.Work().ListOpenBlockersOfType(ctx, work.BlockerProviderLoginRequired, 20)
+		return err
+	})
+	if err != nil {
+		return CheckResult{Name: "provider_login", Category: CategoryCapability, Status: StatusDegraded,
+			Detail: "could not read the blockers: " + err.Error(), Remediation: "check that the database is reachable and migrated"}
+	}
+	if len(open) == 0 {
+		return CheckResult{Name: "provider_login", Category: CategoryCapability, Status: StatusHealthy,
+			Detail: "no attempt is waiting for a provider sign-in"}
+	}
+	items := make([]string, 0, len(open))
+	for _, b := range open {
+		items = append(items, string(b.WorkItemID))
+	}
+	return CheckResult{
+		Name: "provider_login", Category: CategoryCapability, Status: StatusDegraded,
+		Detail: fmt.Sprintf("%d attempt(s) found the provider CLI signed out (work items: %s): %s", len(open), strings.Join(items, ", "), open[0].Reason),
+		Remediation: "sign the provider CLI in again on the worker's machine (Claude: run `claude`, then /login), then retry each blocked node " +
+			"(task page, or aw node-run retry-blocked)",
 	}
 }
 

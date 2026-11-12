@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -39,7 +40,7 @@ import (
 
 func TestGetRunDetail_SQLite_UnknownRun_NotFound(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-rundetail-notfound.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-rundetail-notfound.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestGetRunDetail_SQLite_UnknownRun_NotFound(t *testing.T) {
 // zero-valued placeholders.
 func TestGetRunDetail_SQLite_ReturnsManifestAndCounts(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-rundetail-basic.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-rundetail-basic.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -326,7 +327,7 @@ func TestGetRunTimeline_SQLite_ForkJoin_OrdersActivationsAndAttempts(t *testing.
 // own "rework fixture" Verify-checklist line.
 func TestGetRunGraph_SQLite_Rework_CreatesNewActivationOnReworkTarget(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-rungraph-rework.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "agentkit-rungraph-rework.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

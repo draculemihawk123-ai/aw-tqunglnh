@@ -869,8 +869,9 @@ func TestAgentExecutorProviderReportedFailureCarriesTheProvidersReason(t *testin
 
 // V11-02: a provider that says the account hit a session/usage limit ends the
 // attempt with the dedicated termination reason (whatever its exit code), so the
-// executor can stop it from burning the attempt budget; any other provider failure
-// keeps the generic "provider_failure".
+// executor can stop it from burning the attempt budget. V12-04: one that says it is
+// not signed in gets its own reason too; any other provider failure keeps the
+// generic "provider_failure".
 func TestAgentExecutorProviderQuotaIsReportedWithItsOwnTerminationReason(t *testing.T) {
 	t.Parallel()
 
@@ -880,7 +881,8 @@ func TestAgentExecutorProviderQuotaIsReportedWithItsOwnTerminationReason(t *test
 			mode, want string
 		}{
 			{"provider-failure", ports.TerminationProviderQuotaExceeded},
-			{"provider-failure-other", "provider_failure"},
+			// V12-04: this fixture's failure is "Invalid API key · Please run /login" — a lost sign-in, now its own reason.
+			{"provider-failure-other", ports.TerminationProviderLoginRequired},
 		} {
 			scenario := scenario
 			t.Run(testCase.name+"/"+scenario.mode, func(t *testing.T) {

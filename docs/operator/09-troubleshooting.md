@@ -1,5 +1,14 @@
 # Troubleshooting
 
+## Why did this run stop? (`stopReason`, V12-11)
+
+`aw run diagnostics --project-id <id> <runId>` (and the banner of the task's Graph tab) carries `stopReason`:
+`{"code": "COMMAND_NOT_STARTED", "nodeKey": "gate1", "message": "The gate1 command could not be started (attempt 4); no evidence was
+recorded."}`. Codes: `COMMAND_NOT_STARTED` (see "A node is BLOCKED … the worker stopped claiming jobs" below), `SCOPE_VIOLATION`,
+`PROVIDER_QUOTA_EXCEEDED`, `CYCLE_ESCALATED` (a node ran out of rounds), `APPROVAL_REJECTED`, `APPROVAL_PENDING`,
+`WORKFLOW_DEFINITION_DEFECT`, `ATTEMPT_FAILED` (the failure code is in the message), `RUN_CANCELLED`, and the blocker type when a node is
+blocked (`ADAPTER_BUILD_DRIFT`, `PROVIDER_LOGIN_REQUIRED`, …). `aw run graph <runId>` gives each activation a one-line `resultSummary`.
+
 ## Start here: `aw doctor`
 
 ```bash
@@ -42,6 +51,26 @@ does. No wrapper script is needed. Details: [05-providers-and-isolation.md](05-p
 If the doctor check is healthy yet an agent still cannot use a variable, compare the profile's list with the
 worker's: a name listed in only one of them is not passed (the node's `agentInheritedEnvironment` in its
 execution-profile decision artifact shows what was).
+
+## A node is BLOCKED: `ADAPTER_PROBE_FAILED`, `PROVIDER_LOGIN_REQUIRED`, or the worker stopped claiming jobs (V12-04)
+
+- **`ADAPTER_PROBE_FAILED`** — before an AGENT attempt starts, aw re-measures the pinned provider CLI (file hash, `--version`). If
+  that measurement could not be made at all (the file could not be read, or `--version` did not run three times in a row — on
+  Windows `claude.exe --version` exiting `3221225794` / `0xC0000142`), the node is blocked with `ADAPTER_PROBE_FAILED`. Nothing
+  is known to have changed, so this is **not** `ADAPTER_BUILD_DRIFT`: fix the machine (see the next bullet) and press **Retry**
+  on the blocker (task page header, or the node in Graph & Timeline), or `aw node-run retry-blocked --project-id <id>
+  <nodeRunId> --reason "probe runs again"`. Only a real change of the CLI (another hash or version) is `ADAPTER_BUILD_DRIFT`.
+- **The worker stopped claiming jobs.** Before each claim the worker checks that it can start a child process (`git --version`,
+  cached 30 seconds). When it cannot — typically a worker started from a terminal that was closed on Windows — it logs
+  `WORKER_CANNOT_SPAWN` once and claims nothing, so jobs wait for a healthy worker instead of failing one after another. Start
+  the worker again from a console that stays open (or as a service). A COMMAND or gate whose process did not start still fails,
+  but its attempt now says why: `failureDetail` = `the process could not be started: …` or `the process exited 3221225794
+  (0xC0000142) before it ran: STATUS_DLL_INIT_FAILED …` (diagnostic `PROCESS_START_FAILED`), and it is a technical failure
+  (`PROVIDER_UNAVAILABLE`), never routed as the command's verdict.
+- **`PROVIDER_LOGIN_REQUIRED`** — the provider CLI answered "Invalid API key · Please run /login", "OAuth token has expired", "not
+  logged in". The run does not fail: the node waits `BLOCKED`, and `aw doctor` reports `provider_login: DEGRADED` naming the work
+  items. Sign the CLI in again on the worker's machine (Claude: run `claude`, then `/login`), then **Retry** the node. There is no
+  automatic resume: nothing tells aw when you signed in.
 
 ## `database schema version N is newer than this binary supports`
 
@@ -119,25 +148,37 @@ The text is the CLI's reason, whitespace collapsed, cut at 500 characters and re
 attempt that failed before V9-20 has the code but no detail, and so does a failure the provider did not report itself
 (a crash, a timeout).
 
-### The account hit a session or usage limit: `PROVIDER_QUOTA_EXCEEDED` (V11-02)
+### The account hit a session or usage limit: `PROVIDER_QUOTA_EXCEEDED` (V11-02, V12-03)
 
 When the CLI's reason says the account hit a limit ("You've hit your limit · resets 5pm", "session limit", "usage
-limit", rate limit, quota, "credit balance is too low"), the attempt ends `FAILED` with the dedicated failure code
-`PROVIDER_QUOTA_EXCEEDED` instead of `EXECUTION_FAILED`:
+limit", rate limit, quota, "credit balance is too low"), the attempt **does not fail** (since V12-03, ADR-046). It ends
+`BLOCKED` with the termination reason `PROVIDER_QUOTA_EXCEEDED`, the node waits `BLOCKED`, the run stays `RUNNING`, and
+the work item carries a `PROVIDER_QUOTA_EXCEEDED` blocker whose reason is the provider's words and the resume time:
 
 ```
-# "failureCode": "PROVIDER_QUOTA_EXCEEDED",
-# "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5:30pm (UTC)"
+aw blocker list --project-id <id> <workItemId>
+# "type": "PROVIDER_QUOTA_EXCEEDED", "state": "OPEN",
+# "reason": "You've hit your 5-hour limit · resets 3pm (Asia/Saigon) — aw resumes this node by itself at 2026-11-03T08:02:00Z, or retry it now"
 ```
 
-The code is **never retryable**: an attempt policy cannot list it in `retryableErrorCodes` (publish refuses), and the
-engine does not retry it. A limit resets in hours, so retrying at once only spent the attempt budget — before this
-code, every parallel agent node burnt all its attempts within seconds and the run ended `FAILED`. Now the first
-attempt of the node ends the node, the run ends `FAILED` with the usual `RUN_FAILED` blocker, and nothing else is
-spent. The reset time is **only** in the provider's words (`failureDetail`): neither CLI reports it in a form aw can
-read, so aw does not schedule a retry. Wait until the time the message names, then run again on the same WorkItem
-(`retry-task.sh` in the kit, the **Run Again** button, or `aw work-item retry`; the older `aw blocker resolve --mode RESOLVED` then `aw run start` still works). `show-run.sh` prints a line
-for it. The classification follows the CLI's text: a limit message the CLI words differently stays `EXECUTION_FAILED`.
+- **Automatic resume.** aw reads the reset time from the provider's words ("resets 3pm", "resets 2:30am (Europe/Paris)",
+  "reset at 21:05"; the next such time, in the zone the message names, else the worker's zone) and enqueues a
+  `PROVIDER_QUOTA_RESUME` job for two minutes after it. When the words name no time, it tries again after one hour. The
+  resume runs the **same node** again as a new activation (`aw node-run retry-blocked`, same pins, no repin, the cycle
+  budget is not used), on the worktree as the stopped attempt left it. At most 6 automatic resumes per node and run: a
+  limit that is not a time window ("credit balance is too low") then waits for you.
+- **Resume by hand** once the limit has reset: the **Retry** action of the blocked node on the task page, or
+  `aw node-run retry-blocked --project-id <id> <nodeRunId> --reason "limit reset"`. If the job runs later it finds the
+  node already resumed and does nothing.
+- An attempt policy still cannot list `PROVIDER_QUOTA_EXCEEDED` in `retryableErrorCodes`, and the engine never retries it
+  at once: a limit resets in hours. The classification follows the CLI's text: a limit message the CLI words differently
+  stays `EXECUTION_FAILED` (and the run fails as before).
+
+Run again a run that FAILED for another reason: **Run Again** asks what to do with what the failed attempt left in the
+worktree — **Keep**, **Park** (only the files outside the scope) or **Park all** (every uncommitted change, in scope too,
+into a hidden Git ref; the next run starts from the last commit). CLI: `aw work-item retry … --out-of-scope KEEP|PARK|PARK_ALL`,
+kit: `OUT_OF_SCOPE=PARK_ALL retry-task.sh <workItemId>`. A rerun still starts at `START` (ADR-041); only a blocked node
+resumes where it stopped.
 
 ## A run ended `FAILED` with `WORKFLOW_DEFINITION_DEFECT` (V11-03)
 
@@ -216,6 +257,25 @@ worktree back on the recorded revision. A run that was already running keeps the
 "A commit made outside aw". `adopt-head` refuses with a message that says what to fix: uncommitted changes in the
 worktree (commit or discard them), an attempt still writing (wait or cancel it), or a HEAD that no longer descends from
 the recorded revision after a reset or rebase (put the worktree back on the recorded revision).
+
+## Local commit `FAILED` with `EXECUTION_ERROR` (V12-01)
+
+```bash
+aw release-set local-commit status --project-id <id> <releaseSetId> <localCommitId>
+# "state": "FAILED", "failureReason": "EXECUTION_ERROR",
+# "failureDetail": "claim 5 of 5 failed: … git commit: … index.lock exists"
+#   or "job <id> is DEAD after 5 claims (last error LEASE_EXPIRED): no worker finished the commit; see the worker log"
+```
+
+The worker could not finish the commit: every claim of the job ended with an error, or the job's lease kept expiring (a
+worker that hung or crashed). Before V12 such a commit stayed `REQUESTED` for ever and `commit-task.sh` waited until its
+own timeout; now the operation closes `FAILED` and `failureDetail` says why. Every failed claim is also in the worker
+log (`"msg":"job handler failed"`, with `jobId`, `kind`, `claim`, `maxClaims` and `error`). Fix the cause (another
+process holding the worktree, a Git error, a worker without a console), then request the commit again with the same
+fields and a new `--idempotency-key`: an `EXECUTION_ERROR` failure gets a fresh marker, like `NO_CHANGES`. If the commit
+was requested with an approval, the work item carries `RELEASE_FAILED` with the same detail; resolve it after committing.
+If the retry ends `HEAD_DRIFT`, the failed attempt did create its commit before the worker died: check
+`git -C <worktree> log -1` and adopt it with `aw repository-workspace adopt-head`.
 
 ## Local commit `FAILED` with `NO_CHANGES`
 
@@ -367,6 +427,21 @@ my-id`, not `aw definition publish my-id --kind POLICY --yes`) — see
 Confirm `aw worker` is actually running against the SAME `--db`/`--artifact-root`/`--workspace-root` as `aw
 serve` — `aw serve` alone never probes repositories, executes workflow nodes, or updates projections; it only
 serves the HTTP/CLI surface and accepts commands. See [01-quickstart.md](01-quickstart.md) step 2.
+
+## Run app: the session ended `FAILED` (V12-30)
+
+`aw repository-workspace run-app status --project-id <p> <repositoryWorkspaceId>` (or the Workspace tab's Run app strip) gives the
+reason and the log tail of every process:
+
+| Reason | What to do |
+|---|---|
+| `port N (name) is in use: <program> (pid P) holds it` | That program listens there (often a dev server left from an earlier run): stop it (`kill P`, Task Manager), then Start. aw names it but never kills it. "another program" means aw could not read it (another user's process). |
+| `secret X (name) cannot be resolved` | Set it in the repository's **Secrets** (`aw repository secret set`), or in the worker's environment. |
+| `name exited (code N); see its log` | The process stopped by itself: read its log (a missing dependency, a wrong `dir`, an executable not in the worker's `PATH`). |
+| `name did not start: …` | `argv[0]` was not found or the `dir` does not exist in the worktree; on Windows give `pnpm.cmd` and the like. |
+| `the worker restarted while the application ran` | The worker stopped without stopping it; Start again (check the ports first). |
+
+Nothing happens after Start (state stays "starting")? No `aw worker` is running against this database.
 
 ## Where to look next
 

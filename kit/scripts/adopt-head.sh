@@ -7,6 +7,8 @@
 # Run đã bắt đầu trước lệnh này vẫn giữ revision cũ đã ghim (manifest bất biến): hủy và start lại bằng retry-task.sh.
 # Cách dùng: adopt-head.sh [repositoryId]   (mặc định: repository của project trong aw-state.json)
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 project_id=$(jq -er '.projectId' "$AW_STATE")

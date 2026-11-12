@@ -205,3 +205,34 @@ WHERE id = ? AND state = ? AND version = ?`,
 	}
 	return loadApprovalRequestByID(ctx, r.tx, req.ApprovalRequestID)
 }
+
+// PutApprovalChecklist implements ports.ApprovalRepository (V12-31, migration 0064).
+func (r approvalRepository) PutApprovalChecklist(ctx context.Context, c ports.ApprovalChecklistRecord) error {
+	_, err := r.tx.ExecContext(ctx, `INSERT INTO approval_checklists (approval_request_id, project_id, run_id, node_run_id, work_item_id, verdict, items_json,
+		decided_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ApprovalRequestID, c.ProjectID, c.RunID, c.NodeRunID, c.WorkItemID, c.Verdict, c.ItemsJSON, c.DecidedBy, formatWorkflowTime(c.CreatedAt))
+	return MapSQLiteError(err)
+}
+
+// ListApprovalChecklistsForRun implements ports.ApprovalRepository.
+func (r approvalRepository) ListApprovalChecklistsForRun(ctx context.Context, runID string) ([]ports.ApprovalChecklistRecord, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT approval_request_id, project_id, run_id, node_run_id, work_item_id, verdict, items_json, decided_by, created_at
+		FROM approval_checklists WHERE run_id = ? ORDER BY created_at, approval_request_id`, runID)
+	if err != nil {
+		return nil, MapSQLiteError(err)
+	}
+	defer rows.Close()
+	out := []ports.ApprovalChecklistRecord{}
+	for rows.Next() {
+		var c ports.ApprovalChecklistRecord
+		var created string
+		if err := rows.Scan(&c.ApprovalRequestID, &c.ProjectID, &c.RunID, &c.NodeRunID, &c.WorkItemID, &c.Verdict, &c.ItemsJSON, &c.DecidedBy, &created); err != nil {
+			return nil, MapSQLiteError(err)
+		}
+		if c.CreatedAt, err = parseWorkflowTime(created); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, MapSQLiteError(rows.Err())
+}

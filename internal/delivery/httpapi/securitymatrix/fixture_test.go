@@ -30,6 +30,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	appartifact "github.com/taQuangLing/agent-workflow/internal/app/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
@@ -182,7 +183,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	ctx := context.Background()
 
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "securitymatrix.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "securitymatrix.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

@@ -13,9 +13,10 @@ vi.mock('../api/generated', async () => {
   const actual = await vi.importActual<typeof import('../api/generated')>('../api/generated');
   return {
     ...actual,
+    getWorkItemQueue: vi.fn(async () => ({ projectId: 'proj-1', familyId: 'fam-1', entries: [] })), setWorkItemQueue: vi.fn(),
     getWorkItem: vi.fn(), getTaskFamily: vi.fn(), getWorkItemProjectedDetail: vi.fn(), getRunDiagnostics: vi.fn(),
     cancelRun: vi.fn(), cancelWorkItem: vi.fn(), resolveWorkItemBlocker: vi.fn(),
-    getRunGraph: vi.fn(), getRunTimeline: vi.fn(), retryBlockedActivation: vi.fn(),
+    getRunGraph: vi.fn(), getRunTimeline: vi.fn(), retryBlockedActivation: vi.fn(), useNewCli: vi.fn(),
     getWorkspaceSetState: vi.fn(), getWorkspaceDiff: vi.fn(), getWorkspaceRepositoryLog: vi.fn(), requestWorkspaceReconciliation: vi.fn(),
     listReleaseSetsForFamily: vi.fn(), createReleaseSet: vi.fn(), sealReleaseSet: vi.fn(), abandonReleaseSet: vi.fn(),
     requestReleaseSetLocalCommit: vi.fn(), getReleaseSetLocalCommitStatus: vi.fn(), getReleaseSet: vi.fn(),
@@ -125,7 +126,35 @@ describe('TaskDetailScreen (V7-11)', () => {
     expect(await screen.findByText(/resolved/)).toBeInTheDocument();
   });
 
-  it('an admission-reason blocker shows summary + a Graph & Timeline deep link only, never a resolve or retry button', async () => {
+  it('an admission-reason blocker shows summary, a Retry action (V12-04) and a Graph & Timeline deep link, never a resolve button', async () => {
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'BLOCKED', version: 4, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1', status: 'BLOCKED' } as never) } as never);
+    vi.mocked(api.getRunDiagnostics).mockResolvedValue({
+      runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'BLOCKED', runState: 'WAITING',
+      blockers: [{
+        blockerId: 'blk-2', type: 'ADAPTER_PROBE_FAILED', state: 'OPEN', reason: 'Pinned adapter build drifted',
+        sourceNodeRunId: 'nr-1', openedAt: '2026-09-26T00:00:00Z', version: 1, admissionReason: true, sourceNodeRunVersion: 3,
+        validActions: [{ operationId: 'retryBlockedActivation', scopeKind: 'PROJECT', targetVersion: 3 }],
+      }],
+      orphanedAttempts: [], orphanedAttemptsTruncated: false, providers: [], isolation: [], repositoryWorkspaces: [],
+      validActions: [],
+    } as never);
+    const onTabChange = vi.fn();
+    render(<TaskDetailScreen projectId="proj-1" projectName="platform-core" workItemId="wi-1" activeTab="task-overview" onTabChange={onTabChange} />);
+
+    expect(await screen.findByText('Pinned adapter build drifted')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument();
+    vi.mocked(api.retryBlockedActivation).mockResolvedValue({ nodeRunId: 'nr-1', alreadyRetried: false, retried: true, reactivatedNodeRunId: 'nr-2' } as never);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(api.retryBlockedActivation).toHaveBeenCalledWith('nr-1', { reason: 'retried from the task header' }, expect.anything()));
+    await userEvent.click(screen.getByRole('button', { name: 'View in Graph & Timeline' }));
+    expect(onTabChange).toHaveBeenCalledWith('task-graph', { projectId: 'proj-1', taskId: 'wi-1' });
+  });
+
+  it('a drift blocker offers Use the new CLI (V12-05) with a confirmation, not a plain Retry', async () => {
     vi.mocked(api.getWorkItem).mockResolvedValue({
       workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
       status: 'BLOCKED', version: 4, contract: null,
@@ -146,9 +175,17 @@ describe('TaskDetailScreen (V7-11)', () => {
 
     expect(await screen.findByText('Pinned adapter build drifted')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'View in Graph & Timeline' }));
-    expect(onTabChange).toHaveBeenCalledWith('task-graph', { projectId: 'proj-1', taskId: 'wi-1' });
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    vi.mocked(api.useNewCli).mockResolvedValue({
+      previousAdapterBuildId: 'b-old', adapterBuildId: 'b-new', adapterBuildExisted: false, workflowDefinitionId: 'wf', workflowVersionId: 'wfv-2',
+      workflowVersionNumber: 2, repinnedNodes: ['build'], nextStep: 'cancel the run, then Redo with Latest Version',
+    } as never);
+    await userEvent.click(screen.getByRole('button', { name: 'Use the new CLI' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Use the new CLI' });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Use the new CLI' }));
+    await waitFor(() => expect(api.useNewCli).toHaveBeenCalledWith('wi-1',
+      { nodeRunId: 'nr-1', redo: true, reason: 'the provider CLI changed; redo on the new build' }, expect.anything()));
+    expect(await screen.findByText(/published workflow version 2/)).toBeInTheDocument();
   });
 
   it('done fixture: a terminal WorkItem with a terminal run offers neither Cancel Run nor Cancel WorkItem', async () => {
@@ -345,7 +382,7 @@ describe('GraphTimelineTab (V7-12)', () => {
     vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 4, status: 'LIVE' } } as never);
     renderGraphTab();
 
-    await screen.findByRole('img', { name: /Workflow graph for run run-1/ });
+    await screen.findByRole('group', { name: /Workflow graph for run run-1/ });
     // agent-b is still RUNNING; join/gate/end were never reached — not yet fabricated as any other state.
     expect(screen.getAllByText('agent-b').length).toBeGreaterThan(0);
 
@@ -355,7 +392,7 @@ describe('GraphTimelineTab (V7-12)', () => {
     expect(within(joinRow).getByText('not yet reached')).toBeInTheDocument();
   });
 
-  it('shows what the provider reported an attempt used and the run total (V9-13a), and no usage for an attempt that reported none', async () => {
+  it('shows the run total in the banner and what each activation cost in the node history (V9-13a, V12-13)', async () => {
     vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1' } as never) } as never);
     vi.mocked(api.getRunDiagnostics).mockResolvedValue({
       runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'ACTIVE', runState: 'RUNNING',
@@ -378,12 +415,35 @@ describe('GraphTimelineTab (V7-12)', () => {
     } as never);
     renderGraphTab();
 
-    expect(await screen.findByText(/11,251 in \/ 563 out \(41,515 cached\) · \$0\.0884/, { selector: 'span' })).toBeInTheDocument();
-    await userEvent.click(screen.getByText('EXECUTION_ATTEMPT #1').closest('button')!);
-    expect(screen.getAllByText(/11,251 in \/ 563 out/).length).toBe(2); // run header + the expanded attempt
-    await userEvent.click(screen.getByText('EXECUTION_ATTEMPT #2').closest('button')!);
-    expect(screen.getAllByText(/11,251 in \/ 563 out/).length).toBe(1); // #1 collapsed; #2 reported nothing, so only the run header remains
-    expect(screen.queryByText(/^Usage:/)).not.toBeInTheDocument();
+    const banner = await screen.findByTestId('run-banner');
+    expect(await within(banner).findByText(/11,251 in \/ 563 out \(41,515 cached\) · \$0\.0884/)).toBeInTheDocument();
+    // the old Timeline column is gone (V12-13)
+    expect(screen.queryByRole('list', { name: 'Run timeline' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^agent-a, AGENT/ }));
+    const history = await screen.findByTestId('node-history');
+    expect(within(history).getByTestId('history-row-nr-a')).toHaveTextContent('$0.09');
+  });
+
+  it('the banner says why the run stopped (stopReason) and opens that node (V12-13)', async () => {
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1', status: 'BLOCKED' } as never) } as never);
+    vi.mocked(api.getRunDiagnostics).mockResolvedValue({
+      runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'BLOCKED', runState: 'FAILED',
+      blockers: [], orphanedAttempts: [], orphanedAttemptsTruncated: false, providers: [], isolation: [], repositoryWorkspaces: [],
+      stopReason: { code: 'COMMAND_NOT_STARTED', nodeKey: 'agent-a', nodeRunId: 'nr-a', message: 'The agent-a command could not be started (attempt 4); no evidence was recorded.' },
+      validActions: [],
+    } as never);
+    vi.mocked(api.getRunGraph).mockResolvedValue({
+      runId: 'run-1', manifestRevision: 1, nodes: FORK_JOIN_NODES, possibleEdges: FORK_JOIN_EDGES, takenEdges: [],
+      activations: [fixtureActivation({ nodeRunId: 'nr-a', nodeKey: 'agent-a', activationSequence: 1, state: 'FAILED' })],
+      branchTokens: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' },
+    } as never);
+    vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' } } as never);
+    renderGraphTab();
+    const reason = await screen.findByTestId('stop-reason');
+    expect(reason).toHaveTextContent('could not be started (attempt 4)');
+    expect(screen.getByTestId('node-history-hint')).toBeInTheDocument();
+    await userEvent.click(reason);
+    expect(await screen.findByRole('complementary', { name: 'History of agent-a' })).toBeInTheDocument();
   });
 
   it('an admission-blocked node offers a real Retry action; a failed retry never fabricates a second blocked activation', async () => {
@@ -411,7 +471,9 @@ describe('GraphTimelineTab (V7-12)', () => {
     renderGraphTab();
 
     await userEvent.click(await screen.findByRole('button', { name: /Accessible List/ }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    // V12-04: the header's blocker card has its own Retry too; the graph's is the last one.
+    const retryButtons = await screen.findAllByRole('button', { name: 'Retry' });
+    await userEvent.click(retryButtons[retryButtons.length - 1]);
     const dialog = await screen.findByRole('dialog', { name: 'Retry Blocked Activation' });
     await userEvent.type(within(dialog).getByLabelText(/Reason/), 'trying again');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
@@ -436,7 +498,7 @@ describe('GraphTimelineTab (V7-12)', () => {
     } as never);
     vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' } } as never);
     const { container } = renderGraphTab();
-    await screen.findByRole('img', { name: /Workflow graph/ });
+    await screen.findByRole('group', { name: /Workflow graph/ });
     await expectNoAxeViolations(container);
   });
 
@@ -1226,6 +1288,33 @@ describe('ChatTab (V7-15)', () => {
     expect(await screen.findByText('hello from the operator')).toBeInTheDocument();
     expect(messageApi.fetchMessageContent).not.toHaveBeenCalledWith('proj-1', 'wi-1', 'msg-new');
     expect(screen.getByLabelText('Message composer')).toHaveValue('');
+  });
+
+  it('V12-18: aims a message at one node and its next attempt, and shows who each message is for', async () => {
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1' } as never) } as never);
+    vi.mocked(api.getRunGraph).mockResolvedValue({
+      runId: 'run-1', manifestRevision: 1, activations: [], possibleEdges: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' },
+      nodes: [{ key: 'start', type: 'START' }, { key: 'repro', type: 'AGENT' }, { key: 'fix', type: 'AGENT' }],
+    } as never);
+    vi.mocked(api.listMessages).mockResolvedValue({ items: [
+      messageRefFixture({ messageId: 'msg-a', role: 'USER', actor: 'local-operator', targetNodeKey: 'repro' }),
+      messageRefFixture({ messageId: 'msg-b', sequence: 2, role: 'USER', actor: 'local-operator', nextAttemptOnly: true, delivered: true }),
+    ] } as never);
+    vi.mocked(api.appendMessage).mockResolvedValue({ messageId: 'msg-new', projectId: 'proj-1', workItemId: 'wi-1', sequence: 3, contentArtifactId: 'a' } as never);
+    renderChatTab();
+
+    expect(await screen.findByTestId('audience-msg-a')).toHaveTextContent('for repro');
+    expect(screen.getByTestId('audience-msg-b')).toHaveTextContent('for every node, next attempt only — delivered');
+    const target = screen.getByLabelText('Message for');
+    await within(target).findByRole('option', { name: 'fix' });
+    expect(within(target).queryByRole('option', { name: 'start' })).toBeNull();
+    await userEvent.selectOptions(target, 'fix');
+    await userEvent.click(screen.getByRole('checkbox', { name: /only the next attempt of fix/ }));
+    await userEvent.type(screen.getByLabelText('Message composer'), 'skip the migration this time');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(api.appendMessage).toHaveBeenCalledWith('proj-1', 'wi-1',
+      { role: 'USER', content: 'skip the migration this time', contentType: 'text/plain', targetNodeKey: 'fix', nextAttemptOnly: true },
+      expect.anything()));
   });
 
   it('a failed send keeps the draft and Retry reuses the IDENTICAL idempotency key rather than minting a new one', async () => {

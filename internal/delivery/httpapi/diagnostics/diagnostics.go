@@ -54,6 +54,7 @@
 package diagnostics
 
 import (
+	runtimeapp "github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"net/http"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
@@ -86,5 +87,17 @@ func RegisterRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodGet, Path: "/projects/{projectId}/runs/{runId}/diagnostics", OperationID: "getRunDiagnostics",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: RunDiagnosticsResponse{},
 		Handler: handleGetRunDiagnostics(deps),
+	})
+	// V12-16: what waits for a person across the project's tasks.
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/needs-you", OperationID: "listNeedsYou",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.NeedsYou{},
+		Handler: handleListNeedsYou(deps),
+	})
+	// V12-23: what the work cost, by task and batch, budgets, and provider limits hit now.
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/costs", OperationID: "getProjectCosts",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.ProjectCosts{},
+		Handler: handleGetProjectCosts(deps),
 	})
 }

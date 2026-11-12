@@ -49,7 +49,10 @@ type releaseSetLocalCommitCommittedEventPayload struct {
 type releaseSetLocalCommitFailedEventPayload struct {
 	ReleaseSetLocalCommitID string `json:"releaseSetLocalCommitId"`
 	FailureReason           string `json:"failureReason"`
-	JobID                   string `json:"jobId,omitempty"`
+	// FailureDetail (V12-01) is the redacted last error of an EXECUTION_ERROR failure; an
+	// optional, additive field of schema version 1 (older events simply lack it).
+	FailureDetail string `json:"failureDetail,omitempty"`
+	JobID         string `json:"jobId,omitempty"`
 }
 
 func DecodeReleaseSetLocalCommitRequestedV1(payloadJSON string) (any, error) {

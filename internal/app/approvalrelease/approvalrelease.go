@@ -318,6 +318,7 @@ type OperationView struct {
 	RepositoryWorkspaceID   string   `json:"repositoryWorkspaceId"`
 	State                   string   `json:"state"`
 	FailureReason           string   `json:"failureReason,omitempty"`
+	FailureDetail           string   `json:"failureDetail,omitempty"` // V12-01
 	ParentVCSObjectID       string   `json:"parentVcsObjectId,omitempty"`
 	ResultVCSObjectID       string   `json:"resultVcsObjectId,omitempty"`
 	Files                   []string `json:"files"`
@@ -366,7 +367,7 @@ func (q Queries) ApprovalRelease(ctx context.Context, runID, approvalRequestID s
 			result.Operations = append(result.Operations, OperationView{
 				ReleaseSetLocalCommitID: string(operation.ID), ReleaseSetID: string(operation.ReleaseSetID),
 				RepositoryID: string(operation.RepositoryID), RepositoryWorkspaceID: operation.RepositoryWorkspaceID,
-				State: string(operation.State), FailureReason: string(operation.FailureReason),
+				State: string(operation.State), FailureReason: string(operation.FailureReason), FailureDetail: operation.FailureDetail,
 				ParentVCSObjectID: operation.ParentVCSObjectID, ResultVCSObjectID: operation.ResultVCSObjectID,
 				Files: files, ChangeSetDigest: selection.ChangeSetDigest, Unselected: string(selection.Unselected),
 				ParkedRef: selection.ParkedRef, ParkedPaths: selection.ParkedPaths, Restored: selection.RestoredAt != nil,

@@ -24,16 +24,17 @@ func (r runtimeRepository) GetExecutionAttempt(ctx context.Context, id string) (
 func loadExecutionAttemptByID(ctx context.Context, tx *sql.Tx, id runtime.ExecutionAttemptID) (runtime.ExecutionAttempt, error) {
 	var attempt runtime.ExecutionAttempt
 	var providerKey, terminationReason, failureCode, contextSnapshotID, lastCheckpointID, inputTreesJSON sql.NullString
+	var startedAtRaw, finishedAtRaw, createdAtRaw sql.NullString
 	var inputRevisionSetJSON string
 	err := tx.QueryRowContext(ctx, `
 SELECT id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
        context_snapshot_id, input_revision_set_json, termination_reason, failure_code, last_checkpoint_id, version,
-       input_trees_json
+       input_trees_json, started_at, finished_at, created_at
 FROM execution_attempts WHERE id = ?`, id,
 	).Scan(
 		&attempt.ID, &attempt.NodeRunID, &attempt.AttemptNumber, &attempt.State, &providerKey,
 		&attempt.ExecutionProfileHash, &contextSnapshotID, &inputRevisionSetJSON, &terminationReason, &failureCode, &lastCheckpointID, &attempt.Version,
-		&inputTreesJSON,
+		&inputTreesJSON, &startedAtRaw, &finishedAtRaw, &createdAtRaw,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.ExecutionAttempt{}, fmt.Errorf("%w: execution attempt %s", ports.ErrPersistenceNotFound, id)
@@ -43,6 +44,24 @@ FROM execution_attempts WHERE id = ?`, id,
 	}
 	if providerKey.Valid {
 		attempt.ProviderKey = providerKey.String
+	}
+	// The run timeline needs the attempt times: without them the UI showed every duration as 0 ms (V12). StartedAt stays nil
+	// when started_at is NULL (nil means no executor was spawned); CreatedAt is the display stand-in. An unreadable stamp
+	// leaves the field unset rather than failing every read of the attempt.
+	if startedAtRaw.Valid {
+		if startedAt, err := parseWorkflowTime(startedAtRaw.String); err == nil {
+			attempt.StartedAt = &startedAt
+		}
+	}
+	if finishedAtRaw.Valid {
+		if finishedAt, err := parseWorkflowTime(finishedAtRaw.String); err == nil {
+			attempt.FinishedAt = &finishedAt
+		}
+	}
+	if createdAtRaw.Valid {
+		if createdAt, err := parseWorkflowTime(createdAtRaw.String); err == nil {
+			attempt.CreatedAt = createdAt
+		}
 	}
 	if contextSnapshotID.Valid {
 		id := contextsnapshot.ID(contextSnapshotID.String)

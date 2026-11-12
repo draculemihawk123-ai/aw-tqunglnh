@@ -300,6 +300,8 @@ case "$FAKE_MVN" in
   red) echo "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0"; echo "[ERROR]   IssueServiceTest.reopen:42 expected: <OPEN> but was: <CLOSED>"; exit 1 ;;
   context) echo "[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0 <<< FAILURE! -- in AppTests"; echo "java.lang.IllegalStateException: Failed to load ApplicationContext"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; exit 1 ;;
   compile) echo "[ERROR] COMPILATION ERROR :"; echo "[ERROR] cannot find symbol"; exit 1 ;;
+  compileloc) echo "[ERROR] COMPILATION ERROR :"; echo "[ERROR] /w/backend/src/main/java/a/IssueService.java:[42,17] incompatible types: int cannot be converted to String"; exit 1 ;;
+  setup) echo "[ERROR] Tests run: 2, Failures: 0, Errors: 2, Skipped: 0"; echo "[ERROR]   IssueServiceTest.reopen » DataIntegrityViolation could not execute statement; SQL [n/a]; constraint [fk_issue_project]"; exit 1 ;;
   net) echo "PKIX path building failed"; exit 1 ;;
   weird) echo "Something unexpected happened in the build tool"; exit 1 ;;
   nomvn) echo "mvn: command not found"; exit 127 ;;
@@ -318,6 +320,8 @@ out=$(mt silent) && bad "maven-test: mvn lỗi không output phải không đạ
 out=$(ef red) && printf '%s' "$out" | grep -q "RED as expected" && ok "expect-fail: test đỏ thì đạt, in các dòng thất bại" || bad "expect-fail test đỏ: $out"
 out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf '%s' "$out" | grep -q "does not reach the bug" && ok "expect-fail: test xanh thì không đạt, dặn sửa test" || bad "expect-fail test xanh: $out"; }
 out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "does not compile" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
+out=$(ef compileloc) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "IssueService.java:\[42,17\] incompatible types" && ok "expect-fail: in dòng lỗi biên dịch thật (file:[dòng,cột]) (V12-07)" || bad "expect-fail vị trí lỗi biên dịch: $out"; }
+out=$(ef setup) && bad "expect-fail: test chết lúc dựng dữ liệu phải không đạt" || { printf '%s' "$out" | grep -q "not at an assertion" && ok "expect-fail: lỗi dựng dữ liệu (constraint, Errors không Failures) không được tính là test đỏ (V12-07)" || bad "expect-fail dựng dữ liệu: $out"; }
 out=$(ef net) && bad "expect-fail: lỗi mạng phải không đạt" || { printf '%s' "$out" | grep -q "^ENVIRONMENT:" && ok "expect-fail: lỗi mạng báo là MÔI TRƯỜNG" || bad "expect-fail mạng: $out"; }
 out=$(cd "$tmp/ef" && AW_KIT="$kit" sh "$kit/commands/expect-fail.sh" 2>&1) && bad "expect-fail: thiếu backend/pom.xml phải không đạt" || ok "expect-fail: không nhận ra stack thì không đạt"
 # diff-size, temp-artifacts, check-plan (V10-15) trên một repository Git tạm
@@ -328,6 +332,10 @@ out=$(cmdrun diff-size.sh) && ok "diff-size: không đổi gì thì trong ngư�
 out=$(cmdrun temp-artifacts.sh) && ok "temp-artifacts: không có dòng thêm thì đạt" || bad "temp-artifacts sạch: $out"
 seq 1 30 | sed 's/^/int x/' > "$g/src/Big.java"
 out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && bad "diff-size: vượt ngưỡng phải không đạt" || { printf '%s' "$out" | grep -q "FIX: simplify" && ok "diff-size: vượt ngưỡng thì không đạt, dặn làm gọn" || bad "diff-size vượt: $out"; }
+# V12-06: ngưỡng theo component (.aw-diff-size): src/ được 50 dòng thì cùng diff đó đạt, và output nêu số liệu từng component
+printf '# prefix max-lines max-files max-file-lines\nsrc/ 50 5 40\n' > "$g/.aw-diff-size"
+out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && printf '%s' "$out" | grep -q "component src/: 30 lines" && ok "diff-size: ngưỡng riêng của component, có số liệu từng component" || bad "diff-size component: $out"
+rm "$g/.aw-diff-size"
 mkdir -p "$g/docs"; seq 1 500 > "$g/docs/long.md"; rm "$g/src/Big.java"
 out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && ok "diff-size: tài liệu không tính vào ngưỡng" || bad "diff-size tài liệu: $out"
 printf 'class B {\n  void f() { System.out.println("x"); }\n  // TODO later\n  @Disabled void t() {}\n}\n' > "$g/src/B.java"; echo 'it.only("a", () => {});' > "$g/src/a.test.js"
@@ -393,7 +401,7 @@ for needle in ("build 1", "gate1 1", "build: SCOPE_VIOLATION ×1", "[Important] 
 PY
 out=$(python3 "$kit/tests/test-lessons.py" 2>&1) && ok "lessons-to-skill: định dạng, gộp, revision, gắn vào agent, publish version mới ($(printf '%s' "$out" | grep -c '^  ok') kiểm tra)" || bad "test-lessons: $out"
 if [ -n "${AW:-}" ] || command -v aw > /dev/null 2>&1 || command -v go > /dev/null 2>&1; then
-  for s in plus-debug bugfix-not-red fd-design-bad; do
+  for s in plus-debug bugfix-not-red fd-design-bad plus-large-accept; do
     out=$(python3 "$kit/scripts/walk-workflow.py" "$kit/tests/walk/scenarios/$s.json" 2>&1) && ok "walk-workflow: $s đi đúng thứ tự node" || bad "walk-workflow $s: $out"
   done
   if [ -n "${WALK_ALL:-}" ]; then

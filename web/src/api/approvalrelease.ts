@@ -49,6 +49,8 @@ export interface ReleaseOperationView {
   repositoryWorkspaceId: string;
   state: 'REQUESTED' | 'COMMITTED' | 'FAILED' | string;
   failureReason?: string;
+  /** V12-01: why an EXECUTION_ERROR failure happened. */
+  failureDetail?: string;
   parentVcsObjectId?: string;
   resultVcsObjectId?: string;
   files: string[];
@@ -153,7 +155,10 @@ export function describeOperation(op: ReleaseOperationView): string {
   switch (op.state) {
     case 'REQUESTED': return 'committing…';
     case 'COMMITTED': return `committed ${(op.resultVcsObjectId ?? '').slice(0, 10)}`;
-    case 'FAILED': return `failed — ${FAILURE_TEXT[op.failureReason ?? ''] ?? op.failureReason ?? 'unknown reason'}`;
+    case 'FAILED': {
+      const text = `failed — ${FAILURE_TEXT[op.failureReason ?? ''] ?? op.failureReason ?? 'unknown reason'}`;
+      return op.failureDetail ? `${text}: ${op.failureDetail}` : text;
+    }
     default: return op.state.toLowerCase();
   }
 }
@@ -164,4 +169,5 @@ export const FAILURE_TEXT: Record<string, string> = {
   HEAD_DRIFT: "the worktree's HEAD is not the revision aw recorded (a commit was made outside aw); adopt it or put the worktree back, then commit again",
   WORKSPACE_QUARANTINED: 'the repository workspace is quarantined',
   MARKER_DRIFT: 'the workspace HEAD does not match this operation; the workspace was quarantined',
+  EXECUTION_ERROR: 'the worker could not finish the commit; fix the cause and commit again',
 };

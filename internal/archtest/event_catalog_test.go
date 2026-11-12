@@ -29,6 +29,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/eventschema"
+	"github.com/taQuangLing/agent-workflow/internal/app/forgerelease"
 	"github.com/taQuangLing/agent-workflow/internal/app/message"
 	"github.com/taQuangLing/agent-workflow/internal/app/projectionrebuild"
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
@@ -72,6 +73,7 @@ func TestEmittedDomainEventInventoryMatchesRegisteredInventory(t *testing.T) {
 	releasesetcommit.RegisterEventSchemas(registry)
 	workspacerelease.RegisterEventSchemas(registry)
 	workspacereconcile.RegisterEventSchemas(registry)
+	forgerelease.RegisterEventSchemas(registry)
 	runtime.RegisterEventSchemas(registry)
 	artifactsweep.RegisterEventSchemas(registry)
 	safesettings.RegisterEventSchemas(registry)

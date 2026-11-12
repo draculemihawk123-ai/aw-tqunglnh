@@ -1,0 +1,20 @@
+{
+  "name": "wf-qa: mọi mục đạt",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-qa",
+  "agents": {},
+  "commands": {},
+  "approvals": {
+    "qa": [
+      "passed"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "qa:passed",
+      "end:-"
+    ]
+  }
+}

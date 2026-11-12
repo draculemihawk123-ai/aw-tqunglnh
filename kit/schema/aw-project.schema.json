@@ -25,6 +25,7 @@
                      "envAllowlist": {"$ref": "#/definitions/envNames"}}
     },
     "contextBudgetBytes": {"type": "integer", "minimum": 1},
+    "taskDocuments": {"enum": ["repo", "aw"], "description": "V12-33 (ADR-065): nơi ghi frame.md, plan.md của từng task. repo (mặc định): docs/features/<feature>/tasks/<task>/ trong repo, commit cùng task. aw: .aw/features/<feature>/tasks/<task>/ trong worktree, git bỏ qua, xem và Export to repo trên tab Workspace. 02-spec.md, 03-design.md, tasks.json luôn ở trong repo."},
     "messageBudget": {"$ref": "#/definitions/messageBudget"},
     "layers": {"type": "array", "items": {"$ref": "#/definitions/documentEntry"}},
     "skills": {"type": "array", "items": {"$ref": "#/definitions/documentEntry"}},

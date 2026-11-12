@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -19,12 +20,15 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/runapphost"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretenv"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/secretkey"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
 	"github.com/taQuangLing/agent-workflow/internal/app/artifactsweep"
+	"github.com/taQuangLing/agent-workflow/internal/app/awdocuments"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -40,7 +44,9 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	"github.com/taQuangLing/agent-workflow/internal/app/repositoryprobe"
+	"github.com/taQuangLing/agent-workflow/internal/app/runapp"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/app/secretstore"
 	appwork "github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspaceprovision"
@@ -60,9 +66,11 @@ const (
 	projectionBatchSize        = 200
 	projectionLeaseTTL         = 30 * time.Second
 	attachmentClaimSweepPeriod = time.Minute
-	defaultShutdownGrace       = 30 * time.Second
-	localCommitWriteLeaseTTL   = 2 * time.Minute
-	pollIntervalDefault        = 200 * time.Millisecond
+	// queueAdvancePeriod (V12-19): how often the worker starts the next queued task of a family.
+	queueAdvancePeriod       = 10 * time.Second
+	defaultShutdownGrace     = 30 * time.Second
+	localCommitWriteLeaseTTL = 2 * time.Minute
+	pollIntervalDefault      = 200 * time.Millisecond
 )
 
 // runWorker is `aw worker`'s entry point: it wires SIGINT/SIGTERM into a
@@ -206,6 +214,9 @@ type assembledWorker struct {
 	catalog    *projection.Catalog
 	completion *runtime.CompletionOrchestrator
 	logger     *logging.Logger
+	matcher    redact.Matcher
+	// runApp (V12-30, ADR-062) runs the Run app sessions this worker takes.
+	runApp *runapp.Runner
 }
 
 func (w *assembledWorker) close() { _ = w.store.Close() }
@@ -324,7 +335,9 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	deps := workerDeps{
 		store: store, uow: uow, ids: idsource.Random{}, clk: clock.System{},
 		artifacts: artifacts, provider: provider, supervisor: process.NewSupervisor(),
-		secrets: secretenv.NewResolver(), agents: agents, isolation: process.NewIsolationChecker(),
+		// V12-29 (ADR-061): the repository secret store first, then the worker's environment.
+		secrets: secretstore.Resolver{Deps: secretstore.Deps{UnitOfWork: uow, Keys: secretkey.New(opts.artifactRoot)}, Fallback: secretenv.NewResolver()},
+		agents:  agents, isolation: process.NewIsolationChecker(),
 		execConfig: process.NewRuntimeExecutionConfigProvider(cfg), matcher: matcher, events: events,
 		prober: prober, catalog: projection.NewCatalog(),
 		reaperInterval: opts.reaperInterval, sweepInterval: opts.sweepInterval,
@@ -334,20 +347,44 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	}
 	registry := buildWorkerRegistry(deps)
 
+	logger := logging.New(os.Stderr, logging.JSON, matcher)
+	identity := logging.Identity{ActorType: "worker", ActorID: opts.workerID}
 	pool, err := workerpool.New(store, registry, workerpool.Config{
 		Concurrency: opts.concurrency, Owner: opts.workerID, LeaseTTL: opts.leaseTTL,
 		HeartbeatEvery: opts.leaseHeartbeat, PollInterval: opts.pollInterval, ShutdownGrace: opts.shutdownGrace,
+		// V12-04: claim nothing while this process cannot start a child process (see spawnGate).
+		ClaimGate: newSpawnGate(spawnProbeInterval, probeChildProcess).check,
+		OnClaimGateChange: func(gateErr error) {
+			if gateErr != nil {
+				_ = logger.Error(identity, "WORKER_CANNOT_SPAWN", "worker stopped claiming jobs: it cannot start a child process", map[string]any{"error": gateErr.Error()})
+				return
+			}
+			_ = logger.Info(identity, "worker can start child processes again; claiming jobs", nil)
+		},
+		// V12-01: a job whose handler fails is retried until its claims run out; say why each time.
+		OnHandlerError: func(job ports.DurableJob, handleErr error) {
+			_ = logger.Warn(identity, "job handler failed", map[string]any{
+				"jobId": string(job.ID), "kind": job.Kind, "aggregateId": job.AggregateID,
+				"claim": job.ClaimCount, "maxClaims": job.MaxClaims, "error": handleErr.Error(),
+			})
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct worker pool: %w", err)
 	}
+
+	runApp := runapp.NewRunner(runapp.RunnerDeps{
+		UnitOfWork: uow, Host: runapphost.New(opts.artifactRoot), Supervisor: deps.supervisor, Workspaces: provider,
+		Secrets: deps.secrets.(ports.ScopedSecretResolver), Redact: matcher, InheritedEnvironment: cfg.EnvAllowlist, WorkerID: opts.workerID,
+		Log: func(message string, fields map[string]any) { _ = logger.Warn(identity, message, fields) },
+	})
 
 	built = true
 	return &assembledWorker{
 		opts: opts, store: store, uow: uow, ids: deps.ids, clk: deps.clk, artifacts: artifacts,
 		registry: registry, pool: pool, catalog: deps.catalog,
 		completion: runtime.NewCompletionOrchestrator(uow, deps.ids, deps.clk),
-		logger:     logging.New(os.Stderr, logging.JSON, matcher),
+		logger:     logger, matcher: matcher, runApp: runApp,
 	}, nil
 }
 
@@ -434,6 +471,9 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	}))
 	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(d.uow, d.ids, router, d.clk, d.isolation, d.agents, d.store).WithActivityPoster(activity))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(d.uow, d.ids))
+	// V12-03: a node blocked by the provider's usage limit runs again by itself once the limit resets.
+	registry.Register(runtime.ProviderQuotaResumeJobKind, runtime.NewProviderQuotaResumeHandler(
+		runtime.NewRetryBlockedActivationHandler(d.uow, d.ids, d.isolation, d.agents)))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(d.uow, d.ids))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(d.uow, d.ids))
 	registry.Register(appwork.ScopeExpansionReconcileJobKind, runtime.NewScopeExpansionReconcileHandler(d.uow, d.ids))
@@ -444,7 +484,13 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	registry.Register(readinesscheck.BaselineEvidenceJobKind, readinesscheck.New(d.uow, d.ids, d.supervisor, d.provider))
 	registry.Register(appwork.WorkspaceProvisionJobKind, workspaceprovision.New(d.uow, d.ids, d.provider))
 	registry.Register(workspacereconcile.WorkspaceReconciliationJobKind, workspacereconcile.New(d.uow, d.ids, d.provider, d.store))
-	registry.Register(workspacerelease.WorkspaceSetReleaseJobKind, workspacerelease.NewHandler(d.uow, d.ids, d.provider, d.store))
+	// V12-33 (ADR-065): copy the worktree's aw-private task documents into aw before it is removed.
+	awDocs := awdocuments.Deps{UnitOfWork: d.uow, Store: d.provider, Artifacts: d.artifacts, IDs: d.ids, Matcher: d.matcher}
+	registry.Register(workspacerelease.WorkspaceSetReleaseJobKind, workspacerelease.NewHandler(d.uow, d.ids, d.provider, d.store).
+		WithBeforeRelease(func(ctx context.Context, repositoryWorkspaceID string) error {
+			_, err := awdocuments.SnapshotRepositoryWorkspace(ctx, awDocs, repositoryWorkspaceID)
+			return err
+		}))
 	// Release and projection.
 	registry.Register(releasesetcommit.ReleaseSetLocalCommitJobKind, releasesetcommit.NewHandler(releasesetcommit.ExecuteReleaseSetLocalCommitDeps{
 		UnitOfWork: d.uow, IDs: d.ids, WriteLeases: d.store, MarkerReader: d.provider, Creator: d.provider,
@@ -452,6 +498,8 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 		// V11-07: park the changes a decision did not select, and open RELEASE_FAILED when a commit
 		// requested together with a decision closes FAILED.
 		Parker: d.provider, OnFailed: runtime.OpenReleaseFailedBlockerTx,
+		// V12-01: the failure detail of an EXECUTION_ERROR is shown in the API, CLI and UI.
+		Redact: d.matcher.String,
 	}))
 	registry.Register(projectionrebuild.ProjectionRebuildJobKind, projectionrebuildworker.NewHandler(projectionrebuildworker.Deps{
 		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog, BatchSize: d.projectionRebuildBatchSize, RoundDelay: d.projectionRebuildRoundDelay,
@@ -474,10 +522,14 @@ func (w *assembledWorker) run(ctx context.Context, stdout io.Writer) error {
 
 	loopCtx, cancelLoops := context.WithCancel(ctx)
 	var loops sync.WaitGroup
-	loops.Add(3)
+	loops.Add(6)
+	go func() { defer loops.Done(); w.closeDeadLocalCommits(loopCtx) }()
+	go func() { defer loops.Done(); w.advanceQueues(loopCtx) }()
 	go func() { defer loops.Done(); w.driveProjections(loopCtx) }()
 	go func() { defer loops.Done(); w.sweepAttachmentClaims(loopCtx) }()
 	go func() { defer loops.Done(); w.driveCompletion(loopCtx) }()
+	// V12-30: on shutdown it kills every application process tree it started before returning.
+	go func() { defer loops.Done(); w.runApp.Run(loopCtx, runapp.DefaultTickInterval) }()
 
 	fmt.Fprintf(stdout, "{\"workerId\":%q}\n", w.opts.workerID)
 	err := w.pool.Run(ctx)
@@ -574,6 +626,93 @@ func (w *assembledWorker) sweepAttachmentClaims(ctx context.Context) {
 			_ = w.logger.Warn(w.identity(), "attachment claim sweep failed", map[string]any{"error": err.Error()})
 		case err == nil && (report.Released > 0 || report.Purged > 0):
 			_ = w.logger.Info(w.identity(), "attachment claim sweep", map[string]any{"released": report.Released, "purged": report.Purged})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// spawnProbeInterval is how long a spawn probe answer is reused (V12-04).
+const spawnProbeInterval = 30 * time.Second
+
+// spawnGate (V12-04, UX-18) answers workerpool.Config.ClaimGate: can this worker start a child process right now? A worker
+// started from a shell that was later closed (Windows: the console went away) kept claiming jobs, and each attempt or gate it ran
+// failed to start its process (exit 0xC0000142) with no evidence. The gate runs probe at most once per interval and caches the
+// answer, so a healthy worker pays one `git --version` every 30 seconds and a broken one leaves the jobs to another worker.
+type spawnGate struct {
+	mu       sync.Mutex
+	interval time.Duration
+	probe    func(context.Context) error
+	checked  time.Time
+	last     error
+}
+
+func newSpawnGate(interval time.Duration, probe func(context.Context) error) *spawnGate {
+	return &spawnGate{interval: interval, probe: probe}
+}
+
+func (g *spawnGate) check(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.checked.IsZero() && time.Since(g.checked) < g.interval {
+		return g.last
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	g.last, g.checked = g.probe(probeCtx), time.Now()
+	return g.last
+}
+
+// probeChildProcess starts `git --version` — Git is required by aw, so it is always there, and it is not this binary (whose
+// test build would run tests when started).
+func probeChildProcess(ctx context.Context) error {
+	if err := exec.CommandContext(ctx, "git", "--version").Run(); err != nil {
+		return fmt.Errorf("start `git --version`: %w", err)
+	}
+	return nil
+}
+
+// advanceQueues (V12-19, ADR-054) starts the next queued task of every family whose queue may move on
+// (runtime.AdvanceFamilyQueues: one task at a time, after the one before is DONE).
+func (w *assembledWorker) advanceQueues(ctx context.Context) {
+	ticker := time.NewTicker(queueAdvancePeriod)
+	defer ticker.Stop()
+	for {
+		report, err := runtime.AdvanceFamilyQueues(ctx, w.uow, w.ids, time.Now().UTC())
+		switch {
+		case err != nil && ctx.Err() == nil:
+			_ = w.logger.Warn(w.identity(), "queue advance failed", map[string]any{"error": err.Error()})
+		case len(report.Started) > 0:
+			_ = w.logger.Info(w.identity(), "started queued tasks", map[string]any{"workItems": report.Started})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// closeDeadLocalCommits (V12-01) closes FAILED/EXECUTION_ERROR every local commit operation whose
+// job went DEAD while the operation was still REQUESTED (the lease expired on every claim, so no
+// handler ever reached the last-claim close). Without it such an operation stayed REQUESTED for
+// ever and commit-task.sh waited until its own timeout.
+func (w *assembledWorker) closeDeadLocalCommits(ctx context.Context) {
+	ticker := time.NewTicker(attachmentClaimSweepPeriod)
+	defer ticker.Stop()
+	deps := releasesetcommit.ExecuteReleaseSetLocalCommitDeps{
+		UnitOfWork: w.uow, OnFailed: runtime.OpenReleaseFailedBlockerTx, Redact: w.matcher.String,
+	}
+	for {
+		closed, err := releasesetcommit.CloseLocalCommitsWithDeadJob(ctx, deps, time.Now().UTC())
+		switch {
+		case err != nil && ctx.Err() == nil:
+			_ = w.logger.Warn(w.identity(), "dead local commit sweep failed", map[string]any{"error": err.Error()})
+		case closed > 0:
+			_ = w.logger.Warn(w.identity(), "closed local commits whose job went DEAD", map[string]any{"closed": closed})
 		}
 		select {
 		case <-ctx.Done():

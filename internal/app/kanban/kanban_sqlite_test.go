@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/kanban"
@@ -26,7 +26,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "kanban-app.db"))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, "kanban-app.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

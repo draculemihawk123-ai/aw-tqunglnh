@@ -278,6 +278,29 @@ func ProviderFailureMessage(summary, providerReason string) string {
 // it to the non-retryable PROVIDER_QUOTA_EXCEEDED failure code.
 const TerminationProviderQuotaExceeded = "provider_quota_exceeded"
 
+// TerminationProviderLoginRequired (V12-04, ADR-047) is the AgentExecutionResult.TerminationReason an adapter reports when the
+// provider CLI refused the work because it is not signed in or its session expired. The agent executor maps it to a BLOCKED
+// attempt (PROVIDER_LOGIN_REQUIRED): the run waits until the operator signs in again and retries the node.
+const TerminationProviderLoginRequired = "provider_login_required"
+
+// loginPhrases are the provider-reported words that mean "sign in again": Claude's "Invalid API key · Please run /login" and
+// "OAuth token has expired", Codex's "not logged in", and the generic 401 vocabulary.
+var loginPhrases = []string{
+	"please run /login", "run /login", "not logged in", "invalid api key", "oauth token has expired", "token has expired",
+	"authentication_error", "authentication failed", "login required", "please log in", "401 unauthorized",
+}
+
+// IsProviderLoginMessage reports whether providerReason says the provider CLI is not signed in (V12-04). Case-insensitive.
+func IsProviderLoginMessage(providerReason string) bool {
+	lower := strings.ToLower(providerReason)
+	for _, phrase := range loginPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // quotaPhrases are the provider-reported words that mean "the account hit a
 // limit": Claude's "You've hit your limit · resets 5pm" / "session limit",
 // Codex's "You've hit your usage limit. Try again at 5pm", and the generic
@@ -437,6 +460,10 @@ type AgentExecutionResult struct {
 	// AgentExecutionSucceeded — see AgentProposedOutcome's own doc comment
 	// for the full terminal-marker contract and every rejection case.
 	ProposedOutcome *AgentProposedOutcome
+	// ProviderMessage (V12-03) is the provider CLI's own words for a failed result, set together with
+	// TerminationProviderQuotaExceeded ("You've hit your limit · resets 5pm (Europe/Paris)") so the engine can tell when the
+	// limit resets. Empty otherwise.
+	ProviderMessage string
 }
 
 // AgentExecutor is provider-neutral. Start and Resume block until the
@@ -528,6 +555,12 @@ type ProcessSpec struct {
 	// to exhaust worker memory. Zero uses Supervisor's own default rather
 	// than meaning "unbounded"; this port has no unbounded option (V5-05).
 	OutputLimitBytes int
+	// OnStarted (V12-30) is called with the child's pid right after it started (nil: not called), so a caller can record it and
+	// find the process tree again after a crash.
+	OnStarted func(pid int)
+	// KillWithParent (V12-30) asks the OS to kill the child when the supervising process dies (Linux PR_SET_PDEATHSIG; no effect
+	// elsewhere: Windows already kills the Job Object's tree when the supervisor exits).
+	KillWithParent bool
 }
 
 type ProcessResult struct {

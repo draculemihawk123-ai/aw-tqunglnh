@@ -45,6 +45,7 @@ type WorkRepository struct {
 	releaseSets map[string]work.ReleaseSet
 	// releaseSetLocalCommits is keyed by ReleaseSetLocalCommit.ID (V6-10E).
 	releaseSetLocalCommits map[string]work.ReleaseSetLocalCommit
+	deadLocalCommitJobs    []ports.DeadLocalCommitJob
 	// releaseSetLocalCommitSelections is keyed by ReleaseSetLocalCommit.ID (V11-07).
 	releaseSetLocalCommitSelections map[string]work.ReleaseSetLocalCommitSelection
 }
@@ -685,6 +686,26 @@ func (w *WorkRepository) GetWorkItemBlocker(_ context.Context, id string) (work.
 	return blocker, nil
 }
 
+// ListOpenBlockersOfType mirrors sqlite's own method (V12-04).
+func (w *WorkRepository) ListOpenBlockersOfType(_ context.Context, blockerType work.BlockerType, limit int) ([]work.WorkItemBlocker, error) {
+	var out []work.WorkItemBlocker
+	for _, b := range w.blockers {
+		if b.Type == blockerType && b.State == work.BlockerOpen {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].OpenedAt.Equal(out[j].OpenedAt) {
+			return out[i].OpenedAt.Before(out[j].OpenedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // ListWorkItemBlockersForWorkItem mirrors sqlite's
 // ListWorkItemBlockersForWorkItem, ordered by (OpenedAt, ID) for a stable,
 // deterministic result a test can assert on exactly.
@@ -938,6 +959,28 @@ func (w *WorkRepository) CountNoChangesFailedReleaseSetLocalCommits(_ context.Co
 	return count, nil
 }
 
+// ListLocalCommitsWithDeadJob mirrors sqlite's own method (V12-01). The fake holds no
+// durable jobs, so it returns the operations a test registered with MarkLocalCommitJobDead.
+func (w *WorkRepository) ListLocalCommitsWithDeadJob(context.Context) ([]ports.DeadLocalCommitJob, error) {
+	var out []ports.DeadLocalCommitJob
+	for _, dead := range w.deadLocalCommitJobs {
+		intent, ok := w.releaseSetLocalCommits[string(dead.Intent.ID)]
+		if !ok || intent.State != work.ReleaseSetLocalCommitRequested {
+			continue
+		}
+		dead.Intent = intent
+		out = append(out, dead)
+	}
+	return out, nil
+}
+
+// MarkLocalCommitJobDead registers that the job of operation id went DEAD (test helper).
+func (w *WorkRepository) MarkLocalCommitJobDead(id string, jobID ports.JobID, claims uint32, lastErrorCode string) {
+	w.deadLocalCommitJobs = append(w.deadLocalCommitJobs, ports.DeadLocalCommitJob{
+		Intent: work.ReleaseSetLocalCommit{ID: work.ReleaseSetLocalCommitID(id)}, JobID: jobID, ClaimCount: claims, LastErrorCode: lastErrorCode,
+	})
+}
+
 // PinReleaseSetLocalCommitParent mirrors sqlite's own method: the identical
 // CAS discipline every other transition method in this fake already
 // performs, requiring State to still be REQUESTED.
@@ -991,6 +1034,7 @@ func (w *WorkRepository) TransitionReleaseSetLocalCommitToFailed(_ context.Conte
 	}
 	intent.State = work.ReleaseSetLocalCommitFailed
 	intent.FailureReason = req.FailureReason
+	intent.FailureDetail = req.FailureDetail
 	occurredAt := req.OccurredAt
 	intent.CompletedAt = &occurredAt
 	intent.Version++
@@ -1013,5 +1057,6 @@ func (w *WorkRepository) ValidateLocalCommitWriteLeaseFencing(_ context.Context,
 // widens V9-09's NO_CHANGES-only rule): HEAD_DRIFT and CHANGESET_DRIFT both close the operation before
 // any `git commit`, so a corrected re-request must not collide with the failed operation's marker.
 func neverCommitted(reason work.ReleaseSetLocalCommitFailureReason) bool {
-	return reason == work.FailureNoChanges || reason == work.FailureHeadDrift || reason == work.FailureChangeSetDrift
+	return reason == work.FailureNoChanges || reason == work.FailureHeadDrift || reason == work.FailureChangeSetDrift ||
+		reason == work.FailureExecutionError
 }

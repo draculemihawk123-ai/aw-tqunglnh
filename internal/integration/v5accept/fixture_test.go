@@ -35,6 +35,7 @@ import (
 	processadapter "github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretenv"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
@@ -111,7 +112,9 @@ func newV5AcceptFixture(t *testing.T) *v5AcceptFixture {
 
 	fixtureRoot := t.TempDir()
 	repoPath := createV5AcceptGitRepository(t, filepath.Join(fixtureRoot, "origin-repo-a"))
+	// Inside fixtureRoot: the retained-data scans walk that directory and must read the database file.
 	dbPath := filepath.Join(fixtureRoot, "agentkit-v5accept.db")
+	sqlitetest.WriteMigrated(t, dbPath)
 
 	store, err := sqlite.Open(ctx, dbPath)
 	if err != nil {

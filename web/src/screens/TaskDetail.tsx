@@ -13,22 +13,37 @@ import type { NavRoute } from '../components/shell/LeftNav';
 import {
   abandonReleaseSet, appendMessage, ApiError, approveScopeExpansion, cancelRun, cancelWorkItem, createReleaseSet,
   getReleaseSet, getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDetail, getRunDiagnostics,
-  getRunGraph, getRunTimeline, getScopeExpansionRequest, getTaskFamily, getWorkItem, getWorkItemProjectedDetail,
+  getRunGraph, getRunTimeline, getScopeExpansionRequest, getTaskFamily, getWorkItem, getWorkItemProjectedDetail, getWorkItemRedoPreview,
   getWorkspaceDiff, getWorkspaceRepositoryLog, getWorkspaceSetState, listArtifacts, listEvidence,
   listFamilyScopeExpansionRequests, listMessages, listReleaseSetsForFamily, rejectScopeExpansion, resolveApproval,
   requestReleaseSetLocalCommit, requestWorkspaceReconciliation, requestWorkspaceSetRelease, resolveWorkItemBlocker,
-  retryBlockedActivation, sealReleaseSet, startWorkflowRun,
+  retryBlockedActivation, sealReleaseSet, startWorkflowRun, useNewCli as requestUseNewCli,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
+import type { RedoPreview } from '../api/redo';
+import { RunGraphCanvas } from '../graph/RunGraphCanvas';
+import { NewTaskDialog } from './NewTaskDialog';
+import { CreateTasksDialog } from './CreateTasksDialog';
+import { commitTemplateQueryOptions } from './CommitTemplatePanel';
+import { renderCommitTemplate } from '../api/commitTemplate';
+import { RunHistoryPanel } from '../graph/RunHistoryPanel';
+import { formatDuration, mergeRunHistory } from '../graph/runHistory';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
 import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
-import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView, UsageView } from '../api/rundetail';
+import type { ApprovalRequestView, ChecklistItemResult, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView, UsageView } from '../api/rundetail';
 import { getSessionToken, withSessionToken } from '../api/session';
 import { decodeDiffPatch, fetchWorkingTreeDiff, fetchWorkspaceSource, summarizeUncommitted, workingTreeQueryKey } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
 import { commitAllowedFor } from '../api/approvalrelease';
+import { DiffReviewDialog } from '../review/DiffReviewDialog';
+import { FamilyQueuePanel } from './FamilyQueue';
+import { BaseBranchStrip } from './BaseBranchStrip';
+import { RemotePanel } from './RemotePanel';
+import { RunAppPanel } from './RunAppPanel';
+import { AwDocumentsPanel } from './AwDocumentsPanel';
+import { QAChecklistDialog } from './QAChecklistDialog';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
@@ -99,11 +114,16 @@ function TaskHeader({
   const [cancelWiDialog, setCancelWiDialog] = useState(false);
   const [retryDialog, setRetryDialog] = useState(false);
   const [recreateDialog, setRecreateDialog] = useState(false);
+  const [newTaskDialog, setNewTaskDialog] = useState(false); // V12-14
+  const [tasksJsonDialog, setTasksJsonDialog] = useState(false); // V12-22
   const [cancelReason, setCancelReason] = useState('');
   const [resolvingBlocker, setResolvingBlocker] = useState<BlockerDiagnostic | null>(null);
   const [resolveMode, setResolveMode] = useState<'RESOLVED' | 'WAIVED'>('RESOLVED');
   const [resolveReason, setResolveReason] = useState('');
   const [policyGrantRef, setPolicyGrantRef] = useState('');
+  // V12-05: the drift-blocked node whose provider CLI changed; the operator confirms "Use the new CLI".
+  const [newCliBlocker, setNewCliBlocker] = useState<BlockerDiagnostic | null>(null);
+  const [newCliRedo, setNewCliRedo] = useState(true);
   const { toasts, show, dismiss } = useToasts();
 
   const activeRunId = card?.activeRunId;
@@ -168,6 +188,33 @@ function TaskHeader({
     onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
   });
 
+  // V12-04: retry a node blocked by an admission check, a provider usage limit or a lost sign-in, right from the
+  // blocker card — offered only when the server lists retryBlockedActivation for that blocker.
+  const retryBlockedMutation = useMutation({
+    mutationFn: (b: BlockerDiagnostic) => retryBlockedActivation(b.sourceNodeRunId!, { reason: 'retried from the task header' }, withSessionToken()),
+    onSuccess: result => {
+      if (result.retried) show({ intent: 'success', message: `Retry accepted — the node runs again (${result.reactivatedNodeRunId}).` });
+      else if (result.alreadyRetried) show({ intent: 'info', message: 'This node was already retried.' });
+      else show({ intent: 'danger', message: `Retry still fails: ${result.failureReason}${result.failureDetail ? ' — ' + result.failureDetail : ''}`, duration: 0 });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const useNewCliMutation = useMutation({
+    mutationFn: (b: BlockerDiagnostic) => requestUseNewCli(workItemId, {
+      nodeRunId: b.sourceNodeRunId!, redo: newCliRedo, reason: newCliRedo ? 'the provider CLI changed; redo on the new build' : undefined,
+    }, withSessionToken({ idempotencyKey: crypto.randomUUID() })),
+    onSuccess: result => {
+      setNewCliBlocker(null);
+      const base = `Registered the new CLI build and published workflow version ${result.workflowVersionNumber} (${result.repinnedNodes.join(', ')}).`;
+      if (result.newWorkItemId) show({ intent: 'success', message: `${base} The task was redone as ${result.newWorkItemId}.` });
+      else show({ intent: 'info', message: result.nextStep ? `${base} Next: ${result.nextStep}.` : base, duration: 0 });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
   const resolveBlockerMutation = useMutation({
     mutationFn: async () => {
       if (!resolvingBlocker || !activeRunId) throw new Error('no blocker selected');
@@ -205,8 +252,18 @@ function TaskHeader({
   const runValidActions = runDiagnostics?.validActions ?? [];
   const canCancelRun = !!activeRunId && runValidActions.some(a => a.operationId === 'cancelRun');
   // V11-10 (ADR-041): run a failed or cancelled task again, or redo it with the newest workflow version — both advertised by the server.
-  const canRetry = runValidActions.some(a => a.operationId === 'retryWorkItem');
-  const canRecreate = runValidActions.some(a => a.operationId === 'recreateWorkItem');
+  // V12-05 (UX-06): after a run was cancelled the card has no active run, so there are no run diagnostics and no
+  // validActions — the Redo button disappeared although `aw work-item redo-preview` said canRecreate. The preview is the
+  // same authority the two commands use, so it decides whenever the card shows no run.
+  const redoPreviewQuery = useQuery({
+    queryKey: ['workItemRedoPreview', workItemId],
+    queryFn: async () => (await getWorkItemRedoPreview(workItemId, withSessionToken())) as unknown as RedoPreview,
+    enabled: !isOffline && !activeRunId && !!workItem && workItem.status !== 'DONE' && workItem.status !== 'BACKLOG',
+    retry: false,
+  });
+  const fromPreview = !activeRunId && !!redoPreviewQuery.data;
+  const canRetry = runValidActions.some(a => a.operationId === 'retryWorkItem') || (fromPreview && !!redoPreviewQuery.data?.canRetry);
+  const canRecreate = runValidActions.some(a => a.operationId === 'recreateWorkItem') || (fromPreview && !!redoPreviewQuery.data?.canRecreate);
   const canCancelWorkItem = activeRunId
     ? runValidActions.some(a => a.operationId === 'cancelWorkItem')
     : !!workItem && cancelWorkItemEligibleFromStatus(workItem.status);
@@ -290,6 +347,11 @@ function TaskHeader({
           {/* Single ValidActionBar — only actions the real server-computed data currently advertises */}
           <ValidActionBar actions={[
             ...(canStartRun ? [{ label: 'Start Run', intent: 'primary' as const, onClick: () => startRunMutation.mutate(), disabled: isOffline || startRunMutation.isPending }] : []),
+            // V12-14: a child task of this work item, with a contract, from the UI (no JSON file, no run-task.sh).
+            ...(workItem && workItem.status !== 'DONE' && workItem.status !== 'CANCELLED'
+              ? [{ label: 'New task', intent: 'secondary' as const, onClick: () => setNewTaskDialog(true), disabled: isOffline },
+                // V12-22: the tasks a feature design wrote into tasks.json, as child tasks (replaces split-tasks.sh).
+                { label: 'Tasks from tasks.json', intent: 'secondary' as const, onClick: () => setTasksJsonDialog(true), disabled: isOffline }] : []),
             ...(canRetry ? [{ label: 'Run Again', intent: 'primary' as const, onClick: () => setRetryDialog(true), disabled: isOffline }] : []),
             ...(canRecreate ? [{ label: 'Redo with Latest Version', intent: 'secondary' as const, onClick: () => setRecreateDialog(true), disabled: isOffline }] : []),
             ...(canCancelRun ? [{ label: 'Cancel Run', intent: 'secondary' as const, onClick: () => setCancelRunDialog(true), disabled: isOffline }] : []),
@@ -310,8 +372,13 @@ function TaskHeader({
               actions={
                 b.validActions.some(a => a.operationId === 'resolveWorkItemBlocker')
                   ? [{ label: 'Resolve', onClick: () => { setResolvingBlocker(b); setResolveMode('RESOLVED'); setResolveReason(''); setPolicyGrantRef(''); }, disabled: isOffline }]
-                  : b.validActions.some(a => a.operationId === 'retryBlockedActivation')
-                  ? [{ label: 'View in Graph & Timeline', onClick: () => onTabChange('task-graph', { projectId, taskId: workItemId }) }]
+                  : b.validActions.some(a => a.operationId === 'retryBlockedActivation') && b.sourceNodeRunId
+                  ? [
+                      ...(b.type === 'ADAPTER_BUILD_DRIFT'
+                        ? [{ label: 'Use the new CLI', onClick: () => { setNewCliBlocker(b); setNewCliRedo(true); }, disabled: isOffline }]
+                        : [{ label: 'Retry', onClick: () => retryBlockedMutation.mutate(b), disabled: isOffline || retryBlockedMutation.isPending }]),
+                      { label: 'View in Graph & Timeline', onClick: () => onTabChange('task-graph', { projectId, taskId: workItemId }) },
+                    ]
                   : []
               }
             />
@@ -393,6 +460,38 @@ function TaskHeader({
         </Dialog>
       )}
 
+      {tasksJsonDialog && (
+        <CreateTasksDialog projectId={projectId} parentWorkItemId={workItemId} familyId={workItem?.familyId} isOffline={isOffline}
+          onClose={() => setTasksJsonDialog(false)}
+          onCreated={ids => { setTasksJsonDialog(false); onActionSettled(); show({ intent: 'success', message: `${ids.length} task${ids.length === 1 ? '' : 's'} created from tasks.json.` }); }} />
+      )}
+      {newTaskDialog && (
+        <NewTaskDialog projectId={projectId} parentWorkItemId={workItemId} isOffline={isOffline} onClose={() => setNewTaskDialog(false)}
+          onCreated={id => { setNewTaskDialog(false); onActionSettled(); show({ intent: 'success', message: `Task created (${id}).` }); onTabChange('task-overview', { projectId, taskId: id }); }} />
+      )}
+
+      {/* ── Use the new CLI (V12-05) ──────────────────────────────────── */}
+      {newCliBlocker && (
+        <Dialog
+          title="Use the new CLI"
+          description="The provider CLI no longer matches the build this run is pinned to. aw measures the CLI as it is now, registers that build and publishes a new version of this workflow pinning it. The current run keeps its old pin."
+          onClose={() => setNewCliBlocker(null)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setNewCliBlocker(null)} disabled={useNewCliMutation.isPending}>Not now</Button>
+              <Button intent="primary" loading={useNewCliMutation.isPending} disabled={isOffline} onClick={() => useNewCliMutation.mutate(newCliBlocker)}>Use the new CLI</Button>
+            </>
+          }
+        >
+          <p className="text-[12px] text-[#475569] mb-2">{newCliBlocker.reason}</p>
+          <label className="flex items-start gap-2 text-[13px]">
+            <input type="checkbox" checked={newCliRedo} onChange={e => setNewCliRedo(e.target.checked)} className="mt-1" />
+            <span>Then redo this task with the new version (only once its run has finished; otherwise cancel the run and use Redo with Latest Version)</span>
+          </label>
+          {useNewCliMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(useNewCliMutation.error)} /></div>}
+        </Dialog>
+      )}
+
       {/* ── Cancel WorkItem dialog ────────────────────────────────────── */}
       {cancelWiDialog && (
         <Dialog
@@ -461,12 +560,14 @@ function TaskHeader({
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ workItem, runDiagnostics, runs }: { workItem?: GetWorkItemResponse; runDiagnostics?: RunDiagnosticsResponse; runs?: WorkItemRun[] }) {
+function OverviewTab({ workItem, runDiagnostics, runs, workItemId, isOffline }: { workItem?: GetWorkItemResponse; runDiagnostics?: RunDiagnosticsResponse; runs?: WorkItemRun[]; workItemId?: string; isOffline?: boolean }) {
   const contract = (workItem?.contract ?? null) as WorkItemContract | null;
 
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-4xl mx-auto space-y-4">
+        {/* V12-19: the family queue */}
+        {workItemId && <FamilyQueuePanel workItemId={workItemId} isOffline={isOffline} />}
         <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow p-5">
           <h2 className="text-sm font-semibold text-[#172033] mb-4">Contract</h2>
           {!contract ? (
@@ -551,71 +652,6 @@ function OverviewTab({ workItem, runDiagnostics, runs }: { workItem?: GetWorkIte
 
 // ─── Graph & Timeline Tab ─────────────────────────────────────────────────────
 
-/**
- * computeLayout ranks each node by its longest FLOW-only path from a
- * source (in-degree 0) node — COMPLETION_REWORK edges are excluded from
- * ranking (V7-12's own "graph renderer read-only" scope never asks for a
- * general graph-layout engine; this is the smallest rule that places a
- * FORK's own branches side by side at the same rank and never lets a
- * rework back-edge turn the ranking into a cycle). A node FLOW edges never
- * reach (should not happen for a real compiled WorkflowVersion) falls back
- * to one rank past the deepest real one rather than crashing.
- */
-function computeLayout(nodes: GraphNodeView[], edges: GraphEdgeView[]): Record<string, { x: number; y: number }> {
-  const flowEdges = edges.filter(e => e.kind !== 'COMPLETION_REWORK');
-  const outAdj = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
-  for (const n of nodes) { outAdj.set(n.key, []); inDegree.set(n.key, 0); }
-  for (const e of flowEdges) {
-    outAdj.get(e.from)?.push(e.to);
-    inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
-  }
-  const rank = new Map<string, number>();
-  const remaining = new Map(inDegree);
-  const queue: string[] = [];
-  for (const n of nodes) if ((inDegree.get(n.key) ?? 0) === 0) { rank.set(n.key, 0); queue.push(n.key); }
-  for (let i = 0; i < queue.length; i++) {
-    const key = queue[i];
-    for (const to of outAdj.get(key) ?? []) {
-      rank.set(to, Math.max(rank.get(to) ?? 0, (rank.get(key) ?? 0) + 1));
-      const d = (remaining.get(to) ?? 0) - 1;
-      remaining.set(to, d);
-      if (d === 0) queue.push(to);
-    }
-  }
-  const maxRank = Math.max(0, ...[...rank.values()]);
-  for (const n of nodes) if (!rank.has(n.key)) rank.set(n.key, maxRank + 1);
-
-  const byRank = new Map<number, string[]>();
-  for (const n of nodes) {
-    const r = rank.get(n.key)!;
-    if (!byRank.has(r)) byRank.set(r, []);
-    byRank.get(r)!.push(n.key);
-  }
-  const positions: Record<string, { x: number; y: number }> = {};
-  const rowHeight = 90, colWidth = 140;
-  for (const [r, keys] of byRank) {
-    keys.forEach((key, i) => { positions[key] = { x: i * colWidth + 60, y: r * rowHeight + 30 }; });
-  }
-  return positions;
-}
-
-const STRUCTURAL_KINDS = new Set(['START', 'END', 'FORK', 'JOIN']);
-
-const NODE_STYLE: Record<string, { bg: string; bd: string; fc: string }> = {
-  '':          { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#475569' }, // not yet reached
-  PENDING:     { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#475569' },
-  READY:       { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#475569' },
-  QUEUED:      { bg: '#DBEAFE', bd: '#93C5FD', fc: '#1E40AF' },
-  RUNNING:     { bg: '#EDE9FE', bd: '#C4B5FD', fc: '#5B21B6' },
-  WAITING:     { bg: '#FEF3C7', bd: '#FCD34D', fc: '#92400E' },
-  BLOCKED:     { bg: '#FEE2E2', bd: '#FCA5A5', fc: '#991B1B' },
-  SUCCEEDED:   { bg: '#DCFCE7', bd: '#86EFAC', fc: '#166534' },
-  FAILED:      { bg: '#FEE2E2', bd: '#FCA5A5', fc: '#991B1B' },
-  SKIPPED:     { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#5D697A' },
-  CANCELLED:   { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#5D697A' },
-};
-
 interface GraphTimelineTabProps {
   projectId: string;
   familyId?: string;
@@ -630,19 +666,30 @@ interface GraphTimelineTabProps {
   focusNodeRunId?: string;
   /** Opens the Evidence tab filtered to a node. */
   onOpenEvidence?: (nodeKey: string) => void;
+  /** V12-12: every run of the work item; their history is merged into the graph and the node panel. */
+  runs?: WorkItemRun[];
+  /** V12-17: the work item the review comments are sent to. */
+  workItemId?: string;
 }
 
-function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace, runId, runDiagnostics, isOffline, onActionSettled, focusNodeRunId, onOpenEvidence }: GraphTimelineTabProps) {
+function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOpenWorkspace, runId: activeRunIdProp, runDiagnostics, isOffline, onActionSettled, focusNodeRunId, onOpenEvidence, runs = [] }: GraphTimelineTabProps) {
+  // V12-12: with no active run on the card (the last one finished), the graph shows the newest run.
+  const newestRun = [...runs].sort((a, b) => b.runNumber - a.runNumber)[0];
+  const runId = activeRunIdProp ?? newestRun?.runId;
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   // V11-11: while the run is going, the graph, timeline and node pane follow it.
   const runLive = !!runDiagnostics && ['RUNNING', 'WAITING', 'VERIFYING', 'CANCELLING', 'PENDING'].includes(runDiagnostics.runState);
   const followMs = runLive ? 4000 : false;
   const [showList, setShowList] = useState(false);
-  const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [retrying, setRetrying] = useState<{ nodeRunId: string; nodeKey: string } | null>(null);
   const [retryReason, setRetryReason] = useState('');
   // V11-07: the decision being made through the commit dialog (an outcome the node's release policy offers a commit for).
-  const [deciding, setDeciding] = useState<{ approval: ApprovalRequestView; outcome: string } | null>(null);
+  const [deciding, setDeciding] = useState<{ approval: ApprovalRequestView; outcome: string; checklist?: ChecklistItemResult[] } | null>(null);
+  const [checking, setChecking] = useState<ApprovalRequestView | null>(null); // V12-31: a QA checklist approval being filled in
+  // V12-25: the project's commit message template gives the commit dialog its default message.
+  const commitTemplateQuery = useQuery(commitTemplateQueryOptions(projectId, isOffline));
+  // V12-17: the approval whose changes are being reviewed line by line.
+  const [reviewing, setReviewing] = useState<ApprovalRequestView | null>(null);
   const { toasts, show, dismiss } = useToasts();
 
   const graphQuery = useInfiniteQuery({
@@ -682,6 +729,23 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
     refetchInterval: followMs,
   });
 
+  // V12-12: the earlier runs of the work item (graph and timeline, first page each), merged into the history.
+  const priorRuns = runs.filter(r => r.runId !== runId);
+  const priorQueries = useQueries({
+    queries: priorRuns.flatMap(r => [
+      {
+        queryKey: ['runGraphHistory', projectId, r.runId],
+        queryFn: async () => (await getRunGraph(r.runId, { ...withSessionToken(), query: { limit: '200' } })) as unknown as RunGraphResponse,
+        enabled: !isOffline, staleTime: 60_000,
+      },
+      {
+        queryKey: ['runTimelineHistory', projectId, r.runId],
+        queryFn: async () => (await getRunTimeline(r.runId, { ...withSessionToken(), query: { limit: '200' } })) as unknown as RunTimelineResponse,
+        enabled: !isOffline, staleTime: 60_000,
+      },
+    ]),
+  });
+
   const focusActivations = graphQuery.data?.pages.flatMap(p => p.activations);
   useEffect(() => {
     if (!focusNodeRunId || !focusActivations) return;
@@ -699,7 +763,7 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
       } else if (result.alreadyRetried) {
         show({ intent: 'info', message: 'This activation was already retried by an earlier call.' });
       } else if (result.failureReason === 'ADAPTER_BUILD_DRIFT') {
-        show({ intent: 'danger', message: 'Retry cannot recover this adapter build drift. Use Cancel Run in the header above instead.', duration: 0 });
+        show({ intent: 'danger', message: 'Retry cannot recover this adapter build drift: the CLI changed. Use "Use the new CLI" on the blocker in the header above.', duration: 0 });
       } else {
         show({ intent: 'danger', message: `Retry still fails: ${result.failureReason}${result.failureDetail ? ' — ' + result.failureDetail : ''}`, duration: 0 });
       }
@@ -714,19 +778,20 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
   // real current version right before submitting, never trust the version
   // this tab loaded whenever it first fetched the run.
   const resolveApprovalMutation = useMutation({
-    mutationFn: async ({ approval, outcome, commit }: { approval: ApprovalRequestView; outcome: string; commit?: ApprovalCommitBody }) => {
+    mutationFn: async ({ approval, outcome, commit, checklist }: { approval: ApprovalRequestView; outcome: string; commit?: ApprovalCommitBody; checklist?: ChecklistItemResult[] }) => {
       const fresh = (await getRunDetail(runId!, withSessionToken())) as unknown as { approvalRequests?: ApprovalRequestView[] };
       const freshApproval = (fresh.approvalRequests ?? []).find(a => a.approvalRequestId === approval.approvalRequestId);
       if (!freshApproval || freshApproval.state !== 'PENDING') {
         throw new Error('This approval is no longer pending — it may have already been decided elsewhere. Refresh to see the current state.');
       }
-      return resolveApproval(runId!, approval.approvalRequestId, { outcome, ...(commit ? { commit } : {}) }, withSessionToken({ ifMatch: `"${freshApproval.version}"` }));
+      return resolveApproval(runId!, approval.approvalRequestId, { outcome, ...(commit ? { commit } : {}), ...(checklist ? { checklist } : {}) }, withSessionToken({ ifMatch: `"${freshApproval.version}"` }));
     },
     onSuccess: result => {
       const commit = result.commit as { operations?: unknown[] } | null | undefined;
       const commitNote = commit?.operations?.length ? ` A commit was requested for ${commit.operations.length} repositor${commit.operations.length === 1 ? 'y' : 'ies'}.` : '';
       show({ intent: 'success', message: `Approval resolved — ${result.advanced ? `advanced to ${result.nextNodeKey ?? 'the next step'}` : 'recorded'}.${commitNote}` });
       setDeciding(null);
+      setChecking(null);
       runDetailQuery.refetch();
       onActionSettled();
     },
@@ -747,9 +812,20 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
   const possibleEdges = graphQuery.data!.pages[0].possibleEdges;
   const activations = graphQuery.data!.pages.flatMap(p => p.activations);
   const entries = timelineQuery.data?.pages.flatMap(p => p.entries) ?? [];
+  const currentRunNumber = runs.find(r => r.runId === runId)?.runNumber ?? (Math.max(0, ...runs.map(r => r.runNumber)) + 1);
+  const history = mergeRunHistory([
+    ...priorRuns.map((r, i) => ({
+      runId: r.runId, runNumber: r.runNumber, workflowVersionId: r.workflowVersionId,
+      graph: priorQueries[2 * i]?.data as RunGraphResponse | undefined,
+      timeline: (priorQueries[2 * i + 1]?.data as RunTimelineResponse | undefined)?.entries,
+    })),
+    {
+      runId, runNumber: currentRunNumber, workflowVersionId: runs.find(r => r.runId === runId)?.workflowVersionId,
+      graph: { nodes, activations, takenEdges: graphQuery.data!.pages.flatMap(p => p.takenEdges ?? []) }, timeline: entries,
+    },
+  ]);
   // Every page carries the whole run's total; the last page loaded is the freshest.
   const runUsage = timelineQuery.data?.pages[timelineQuery.data.pages.length - 1]?.usage;
-  const positions = computeLayout(nodes, possibleEdges);
 
   const latestActivationByNode = new Map<string, NodeActivationView>();
   for (const a of activations) {
@@ -769,13 +845,32 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
     }
   }
 
-  const maxX = Math.max(160, ...Object.values(positions).map(p => p.x)) + 100;
-  const maxY = Math.max(90, ...Object.values(positions).map(p => p.y)) + 60;
 
-  const timelineEntries = selectedNodeKey ? entries.filter(e => e.nodeKey === selectedNodeKey) : entries;
+
+  // V12-13: the banner — the newest run's state, why it stopped (stopReason, V12-11), its time and what it cost.
+  const startedTimes = entries.map(e => e.startedAt).filter((t): t is string => !!t).sort();
+  const finishedTimes = entries.map(e => e.finishedAt).filter((t): t is string => !!t).sort();
+  const runStart = runs.find(r => r.runId === runId)?.startedAt ?? startedTimes[0];
+  const runEnd = runs.find(r => r.runId === runId)?.finishedAt ?? (runLive ? undefined : finishedTimes[finishedTimes.length - 1]);
+  const elapsed = runStart ? (runEnd ? Date.parse(runEnd) : Date.now()) - Date.parse(runStart) : undefined;
+  const stopReason = runDiagnostics?.stopReason;
+  const runState = runDiagnostics?.runState ?? runs.find(r => r.runId === runId)?.state;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="px-4 py-2 border-b border-[#CDD5DF] bg-white flex items-center gap-3 flex-wrap flex-shrink-0" data-testid="run-banner" role="status">
+        <span className="text-[12px] text-[#475569]">Run {currentRunNumber}{runs.length > 1 ? ` of ${runs.length}` : ''}</span>
+        {runState && <StatusBadge state={runState} entity="workitem" />}
+        {stopReason && (
+          <button type="button" className={`text-[13px] text-left ${stopReason.code === 'APPROVAL_PENDING' ? 'text-[#3730A3]' : 'text-[#991B1B]'} hover:underline`}
+            onClick={() => stopReason.nodeKey && setSelectedNodeKey(stopReason.nodeKey)} data-testid="stop-reason" title={stopReason.code}>
+            {stopReason.message}
+          </button>
+        )}
+        <span className="flex-1" />
+        {elapsed !== undefined && <span className="text-[12px] text-[#475569]">Time <span className="font-mono text-[#172033]">{formatDuration(elapsed)}</span></span>}
+        {runUsage && <span className="text-[12px] text-[#475569]" title="Reported by the provider CLI, summed over every attempt of the run">Cost <span className="font-mono text-[#172033]">{formatUsage(runUsage)}</span></span>}
+      </div>
       {pendingApprovals.length > 0 && (
         <div className="px-4 py-2 bg-[#EEF2FF] border-b border-[#C7D2FE] space-y-2 flex-shrink-0">
           {pendingApprovals.map(approval => {
@@ -789,7 +884,12 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
                   {approval.authorizedRoles?.length ? ` (${approval.authorizedRoles.join(', ')})` : ''}
                 </span>
                 <div className="flex-1" />
-                {outcomes.length === 0 ? (
+                {workItemId && familyId && outcomes.length > 0 && (
+                  <Button size="compact" intent="secondary" disabled={isOffline} onClick={() => setReviewing(approval)}>Review diff</Button>
+                )}
+                {approval.checklist ? (
+                  <Button size="compact" intent="primary" disabled={isOffline} onClick={() => setChecking(approval)}>QA checklist…</Button>
+                ) : outcomes.length === 0 ? (
                   <span className="text-[12px] text-[#3730A3] italic">no declared outcomes on this node</span>
                 ) : outcomes.map(outcome => (
                   <Button key={outcome} size="compact" intent="primary" disabled={isOffline}
@@ -808,8 +908,8 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
       {/* V11-07: how the commits requested with earlier decisions went */}
       <ReleaseStatusStrip projectId={projectId} runId={runId} approvals={runDetailQuery.data?.approvalRequests ?? []} isOffline={isOffline} onOpenWorkspace={onOpenWorkspace} />
       <div className="flex-1 flex overflow-hidden">
-      {/* Graph panel — 58% */}
-      <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 58%', minWidth: 0 }}>
+      {/* Graph panel — 60% */}
+      <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 60%', minWidth: 0 }}>
         <div className="flex items-center justify-between px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8]">
           <span className="text-[12px] font-semibold text-[#475569]">Workflow Graph</span>
           <div className="flex gap-1">
@@ -852,132 +952,86 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
             </ol>
           </div>
         ) : (
-          <div className="flex-1 overflow-auto bg-[#FAFBFC]">
-            <svg width={maxX} height={maxY} className="mx-auto mt-4" role="img" aria-label={`Workflow graph for run ${runId}`}>
-              <defs>
-                <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#AAB4C3" />
-                </marker>
-                <marker id="arr-rw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#FCD34D" />
-                </marker>
-                <marker id="arr-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#3659E3" />
-                </marker>
-              </defs>
-              {possibleEdges.map((e, i) => {
-                const f = positions[e.from], t = positions[e.to];
-                if (!f || !t) return null;
-                const rw = e.kind === 'COMPLETION_REWORK';
-                const taken = (graphQuery.data?.pages.flatMap(p => p.takenEdges ?? []) ?? []).some(te => te.edgeKey === e.key || (te.fromNodeKey === e.from && te.outcome === e.outcome));
-                const x1 = f.x + 55, y1 = f.y + 29, x2 = t.x + 55, y2 = t.y;
-                const path = rw
-                  ? `M ${x1} ${y1} C ${x1 - 70} ${y1 + 50}, ${x2 - 70} ${y2 - 50}, ${x2} ${y2}`
-                  : `M ${x1} ${y1} L ${x2} ${y2}`;
-                const stroke = rw ? '#FCD34D' : taken ? '#3659E3' : '#CDD5DF';
-                return (
-                  <g key={e.key || i}>
-                    <path d={path} stroke={stroke} strokeWidth={taken ? 2 : 1.5}
-                      strokeDasharray={rw ? '5,3' : undefined} fill="none"
-                      markerEnd={`url(#${rw ? 'arr-rw' : taken ? 'arr-taken' : 'arr'})`} />
-                    <text x={(x1 + x2) / 2 + (rw ? -60 : 4)} y={(y1 + y2) / 2}
-                      fontSize="12" fill={rw ? '#92400E' : '#5D697A'} fontFamily="JetBrains Mono, monospace">{e.outcome}</text>
-                  </g>
-                );
-              })}
-              {nodes.map(node => {
-                const pos = positions[node.key];
-                if (!pos) return null;
-                const activation = latestActivationByNode.get(node.key);
-                const sel = selectedNodeKey === node.key;
-                const round = STRUCTURAL_KINDS.has(node.type);
-                const style = NODE_STYLE[activation?.state ?? ''] ?? NODE_STYLE[''];
-                return (
-                  // Mouse-only convenience, the same documented pattern ui.tsx's own
-                  // Table.onRowClick uses: never role="button"/tabIndex here, since
-                  // the outer <svg role="img"> is a single read-only picture and
-                  // ARIA forbids nesting an interactive control inside it. The real,
-                  // keyboard-reachable equivalent (select a node to filter the
-                  // timeline) lives in the Accessible List's own real <button> rows.
-                  <g key={node.key} onClick={() => setSelectedNodeKey(sel ? null : node.key)} style={{ cursor: 'pointer' }}
-                    aria-hidden>
-                    {round
-                      ? <circle cx={pos.x + 55} cy={pos.y + 12} r={22} fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
-                      : <rect x={pos.x} y={pos.y} width={110} height={58} rx="8" fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
-                    }
-                    <text x={pos.x + 55} y={pos.y + (round ? 8 : 17)} textAnchor="middle" fontSize="12" fontWeight="500" fill={style.fc} fontFamily="Inter, sans-serif">{node.type}</text>
-                    <text x={pos.x + 55} y={pos.y + (round ? 22 : 33)} textAnchor="middle" fontSize="12" fill={style.fc} fontFamily="Inter, sans-serif">{node.key}</text>
-                    {!round && activation && <text x={pos.x + 55} y={pos.y + 50} textAnchor="middle" fontSize="11" fill={style.fc} fontFamily="Inter, sans-serif" data-testid={`node-label-${node.key}`}>{nodeOneLiner(activation.nodeRunId, entries, Date.now())}</text>}
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
-        )}
-      </div>
-      {/* Drag handle */}
-      <div className="w-1 bg-[#E9EDF3] border-x border-[#CDD5DF] cursor-col-resize flex-shrink-0" aria-hidden title="Resize panels" />
-      {/* Timeline panel — 42% */}
-      <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 42%', minWidth: 0 }}>
-        {selectedNodeKey && latestActivationByNode.get(selectedNodeKey) && (
-          <NodeDetailPane
-            nodeRunId={latestActivationByNode.get(selectedNodeKey)!.nodeRunId} isOffline={isOffline}
-            onClose={() => setSelectedNodeKey(null)} onOpenEvidence={onOpenEvidence}
+          // V12-10: the run graph of the decided design (shapes, ×n, +n, Main/All paths, keyboard); the Accessible List stays.
+          <RunGraphCanvas
+            nodes={nodes} edges={possibleEdges} activations={history.activations}
+            takenEdges={history.takenEdges}
+            selectedNodeKey={selectedNodeKey} onSelect={key => setSelectedNodeKey(selectedNodeKey === key ? null : key)}
+            label={`Workflow graph for run ${runId}`}
           />
         )}
-        <div className="px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8] flex items-center justify-between">
-          <span className="text-[12px] font-semibold text-[#475569]">Timeline{selectedNodeKey ? ` — ${selectedNodeKey}` : ''}</span>
-          {runUsage && <span className="text-[12px] text-[#475569]" title="Reported by the provider CLI, summed over every attempt of the run">Run usage: <span className="font-mono text-[#172033]">{formatUsage(runUsage)}</span></span>}
-        </div>
-        {timelineEntries.length === 0 && <p className="text-[12px] text-[#475569] p-3">No timeline entries yet.</p>}
-        <div className="flex-1 overflow-y-auto p-3 space-y-1" role="list" aria-label="Run timeline">
-          {timelineEntries.map((ev, i) => {
-            const retryable = ev.kind === 'NODE_RUN' ? retryableByNodeRunId.get(ev.nodeRunId) : undefined;
-            const failed = ev.attemptState && ['FAILED', 'TIMED_OUT', 'LOST', 'INDETERMINATE'].includes(ev.attemptState);
-            return (
-              <div key={i} role="listitem">
-                <button
-                  onClick={() => setExpandedEntry(expandedEntry === i ? null : i)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left rounded-[6px] border border-[#ECEFF4] bg-white hover:border-[#CDD5DF] transition-colors"
-                >
-                  <span className="font-mono text-[12px] text-[#475569] flex-shrink-0 w-10">#{ev.activationSequence}</span>
-                  <span className="font-mono text-[12px] text-[#475569] flex-shrink-0 truncate">{ev.kind}{ev.attemptNumber ? ` #${ev.attemptNumber}` : ''}</span>
-                  <span className="text-[12px] px-1.5 py-0.5 bg-[#EEF2FF] text-[#3659E3] rounded-[4px] flex-shrink-0">{ev.nodeKey}</span>
-                  <span className={`text-[12px] truncate flex-1 text-right ${failed ? 'text-[#991B1B]' : 'text-[#172033]'}`}>{ev.kind === 'NODE_RUN' ? ev.nodeState : ev.attemptState}</span>
-                </button>
-                {expandedEntry === i && (
-                  <div className="mx-3 border-x border-b border-[#ECEFF4] rounded-b-[6px] px-3 py-2 bg-[#FAFBFC] text-[12px] text-[#475569] space-y-1">
-                    {ev.selectedOutcome && <div>Outcome: <span className="font-mono text-[#172033]">{ev.selectedOutcome}</span></div>}
-                    {ev.blockReason && <div>Block reason: <span className="text-[#991B1B]">{ev.blockReason}</span></div>}
-                    {ev.reactivationReason && <div>Reactivation: <span className="font-mono text-[#172033]">{ev.reactivationReason}</span></div>}
-                    {ev.providerKey && <div>Provider: <span className="font-mono text-[#172033]">{ev.providerKey}</span></div>}
-                    {ev.terminationReason && <div>Termination reason: <span className="font-mono text-[#991B1B]">{ev.terminationReason}</span></div>}
-                    {ev.failureCode && <div>Failure code: <span className="font-mono text-[#991B1B]">{ev.failureCode}</span></div>}
-                    {ev.usage && <div>Usage: <span className="font-mono text-[#172033]">{formatUsage(ev.usage)}</span></div>}
-                    {ev.lastCheckpointId && <div>Last checkpoint: <span className="font-mono text-[#172033]">{ev.lastCheckpointId}</span></div>}
-                    {ev.startedAt && <div>Started: {new Date(ev.startedAt).toLocaleString()}</div>}
-                    {ev.finishedAt && <div>Finished: {new Date(ev.finishedAt).toLocaleString()}</div>}
-                    {retryable && ev.kind === 'NODE_RUN' && (
-                      <Button size="compact" intent="secondary" disabled={isOffline}
-                        onClick={() => { setRetrying({ nodeRunId: ev.nodeRunId, nodeKey: ev.nodeKey }); setRetryReason(''); }}>Retry</Button>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      </div>
+      {/* V12-13: the history panel of the selected node, on the right (the old Timeline column is gone) */}
+      <div className="flex flex-col overflow-hidden border-l border-[#CDD5DF]" style={{ flex: '0 0 40%', minWidth: 0 }}>
+        {selectedNodeKey && (nodes.find(n => n.key === selectedNodeKey) || history.rowsByNode.has(selectedNodeKey)) && (() => {
+          // V12-12: the node's panel — definition, outcomes, every activation of every run; actions only from the server.
+          const node = nodes.find(n => n.key === selectedNodeKey) ?? { key: selectedNodeKey, type: 'UNKNOWN' };
+          const latest = latestActivationByNode.get(selectedNodeKey);
+          const retryable = latest ? retryableByNodeRunId.get(latest.nodeRunId) : undefined;
+          const approval = pendingApprovals.find(a => a.nodeKey === selectedNodeKey);
+          const actions = (retryable && latest) || approval ? (
+            <>
+              {retryable && latest && (
+                <Button size="compact" intent="secondary" disabled={isOffline}
+                  onClick={() => { setRetrying({ nodeRunId: latest.nodeRunId, nodeKey: selectedNodeKey }); setRetryReason(''); }}>Retry</Button>
+              )}
+              {approval?.checklist && <Button size="compact" intent="primary" disabled={isOffline} onClick={() => setChecking(approval)}>QA checklist…</Button>}
+              {approval && !approval.checklist && (node.outcomes ?? []).map(outcome => (
+                <Button key={outcome} size="compact" intent="primary" disabled={isOffline}
+                  onClick={() => (commitAllowedFor(approval.release, outcome) ? setDeciding({ approval, outcome }) : resolveApprovalMutation.mutate({ approval, outcome }))}>
+                  {outcome}
+                </Button>
+              ))}
+            </>
+          ) : undefined;
+          return (
+            <div className="flex-1 min-h-0">
+              <RunHistoryPanel
+                key={selectedNodeKey}
+                node={node} edges={possibleEdges} takenEdges={history.takenEdges}
+                rows={history.rowsByNode.get(selectedNodeKey) ?? []} actions={actions}
+                renderDetail={nodeRunId => <NodeDetailPane nodeRunId={nodeRunId} isOffline={isOffline} onClose={() => {}} onOpenEvidence={onOpenEvidence} />}
+                onClose={() => setSelectedNodeKey(null)}
+              />
+            </div>
+          );
+        })()}
+        {!selectedNodeKey && (
+          <p className="text-[12px] text-[#475569] p-4" data-testid="node-history-hint">
+            Select a node (click it, or Tab to it and press Enter) to see what it did in every run of this task.
+          </p>
+        )}
       </div>
       </div>
 
+      {reviewing && workItemId && familyId && (
+        <DiffReviewDialog projectId={projectId} workItemId={workItemId} familyId={familyId} runId={runId}
+          approvalRequestId={reviewing.approvalRequestId} approvalVersion={reviewing.version} nodeKey={reviewing.nodeKey}
+          outcomes={nodes.find(n => n.key === reviewing.nodeKey)?.outcomes ?? []} isOffline={isOffline}
+          onClose={() => setReviewing(null)}
+          onDecided={outcome => {
+            show({ intent: 'success', message: `${reviewing.nodeKey}: ${outcome} recorded.` });
+            setReviewing(null);
+            runDetailQuery.refetch();
+            onActionSettled();
+          }} />
+      )}
       {deciding && (
         <ApprovalCommitDialog
           projectId={projectId} familyId={familyId} approval={deciding.approval} outcome={deciding.outcome}
-          defaultMessage={workItemTitle ?? ''} isOffline={isOffline}
+          defaultMessage={renderCommitTemplate(commitTemplateQuery.data?.template, workItemTitle ?? '', workItemId ?? '')} isOffline={isOffline}
           pending={resolveApprovalMutation.isPending} error={resolveApprovalMutation.error}
           onClose={() => { setDeciding(null); resolveApprovalMutation.reset(); }}
-          onSubmit={commit => resolveApprovalMutation.mutate({ approval: deciding.approval, outcome: deciding.outcome, commit })}
+          onSubmit={commit => resolveApprovalMutation.mutate({ approval: deciding.approval, outcome: deciding.outcome, commit, checklist: deciding.checklist })}
         />
+      )}
+      {checking?.checklist && workItemId && !deciding && (
+        <QAChecklistDialog projectId={projectId} workItemId={workItemId} qaTitle={workItemTitle ?? ''} checklist={checking.checklist} isOffline={isOffline}
+          pending={resolveApprovalMutation.isPending} error={resolveApprovalMutation.error}
+          onClose={() => { setChecking(null); resolveApprovalMutation.reset(); }}
+          onSubmit={(outcome, checklist) => (commitAllowedFor(checking.release, outcome)
+            ? setDeciding({ approval: checking, outcome, checklist })
+            : resolveApprovalMutation.mutate({ approval: checking, outcome, checklist }))} />
       )}
       {retrying && (
         <Dialog
@@ -1266,6 +1320,12 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
         </Button>
       </div>
 
+      {/* V12-20: the worktree against the repository's base branch */}
+      {activeRepo && <BaseBranchStrip projectId={projectId} repo={activeRepo} isOffline={isOffline} onChanged={() => { void workspaceSetQuery.refetch(); }} />}
+      {/* V12-28: the family branch on GitHub — push, pull request, merge */}
+      {activeRepo && <RemotePanel projectId={projectId} repo={activeRepo} isOffline={isOffline} defaultTitle="" />}
+      {activeRepo && <RunAppPanel projectId={projectId} repo={activeRepo} isOffline={isOffline} />}
+      {activeRepo && <AwDocumentsPanel projectId={projectId} repo={activeRepo} isOffline={isOffline} />}
       {activeRepo && activeRepo.state === 'QUARANTINED' && (
         <div role="alert" className="px-4 py-2 bg-[#FEF3C7] border-b border-[#FCD34D] flex items-center gap-2 flex-shrink-0">
           <AlertTriangle size={13} className="text-[#92400E] flex-shrink-0" aria-hidden />
@@ -1668,7 +1728,7 @@ function ReleaseSetPanel({
 
   const localCommitStatusQuery = useQuery({
     queryKey: ['releaseSetLocalCommit', projectId, pollingLocalCommitId],
-    queryFn: async () => (await getReleaseSetLocalCommitStatus(projectId, committing!.releaseSet.releaseSetId, pollingLocalCommitId!, withSessionToken())) as unknown as { state: string; failureReason?: string },
+    queryFn: async () => (await getReleaseSetLocalCommitStatus(projectId, committing!.releaseSet.releaseSetId, pollingLocalCommitId!, withSessionToken())) as unknown as { state: string; failureReason?: string; failureDetail?: string },
     enabled: !!pollingLocalCommitId,
     refetchInterval: q => (q.state.data?.state === 'REQUESTED' ? 1000 : false),
   });
@@ -1765,7 +1825,7 @@ function ReleaseSetPanel({
       <div className="flex-1 overflow-y-auto">
         {canRelease && (
           <div className="p-4 border-b border-[#CDD5DF] bg-white">
-            <p className="text-[12px] text-[#475569] mb-2">Workspace set is eligible for release{workspaceSetState ? ` (currently ${workspaceSetState})` : ''}.</p>
+            <p className="text-[12px] text-[#475569] mb-2">Workspace set is eligible for release{workspaceSetState ? ` (currently ${workspaceSetState})` : ''}. Releasing closes the work batch: the worktrees are removed, and a branch whose work is already in another branch (merged) is deleted.</p>
             <Button intent="secondary" size="compact" className="w-full justify-center" disabled={isOffline} onClick={() => setReleaseConfirmOpen(true)}>Release Workspace</Button>
           </div>
         )}
@@ -1926,7 +1986,7 @@ function ReleaseSetPanel({
             <div className="mt-3">
               <OperationNotice
                 state={localCommitStatusQuery.data?.state === 'COMMITTED' ? 'Completed' : localCommitStatusQuery.data?.state === 'FAILED' ? 'Failed' : 'Running'}
-                message={localCommitStatusQuery.data?.state === 'FAILED' ? localCommitStatusQuery.data?.failureReason : `Local commit ${localCommitStatusQuery.data?.state ?? 'REQUESTED'}`}
+                message={localCommitStatusQuery.data?.state === 'FAILED' ? [localCommitStatusQuery.data?.failureReason, localCommitStatusQuery.data?.failureDetail].filter(Boolean).join(': ') : `Local commit ${localCommitStatusQuery.data?.state ?? 'REQUESTED'}`}
                 ref={pollingLocalCommitId}
               />
             </div>
@@ -2295,8 +2355,11 @@ function MessageBody({ projectId, workItemId, message }: { projectId: string; wo
   );
 }
 
-function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: string; workItemId: string; isOffline?: boolean; onViewNode?: (nodeRunId: string) => void }) {
+function ChatTab({ projectId, workItemId, isOffline, onViewNode, nodeKeys = [] }: { projectId: string; workItemId: string; isOffline?: boolean; onViewNode?: (nodeRunId: string) => void; nodeKeys?: string[] }) {
   const queryClient = useQueryClient();
+  // V12-18: who the next message is for — one node, and/or only the next attempt.
+  const [targetNodeKey, setTargetNodeKey] = useState('');
+  const [nextAttemptOnly, setNextAttemptOnly] = useState(false);
   // V11-11: the engine writes its milestones here too; "mine" hides them.
   const [onlyMine, setOnlyMine] = useState(false);
   const { toasts, show, dismiss } = useToasts();
@@ -2332,6 +2395,7 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
   const sendMutation = useMutation({
     mutationFn: () => appendMessage(projectId, workItemId, {
       role: 'USER', content: draft, contentType: 'text/plain',
+      ...(targetNodeKey ? { targetNodeKey } : {}), ...(nextAttemptOnly ? { nextAttemptOnly } : {}),
     }, withSessionToken({ idempotencyKey: composeKey })),
     onSuccess: result => {
       // The operator already holds the exact text just sent — seed the
@@ -2393,6 +2457,7 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
                       <span className="text-[12px] text-[#475569]">{new Date(msg.createdAt).toLocaleTimeString()}</span>
                       {msg.attemptId && <span className="font-mono text-[12px] px-1.5 py-0.5 bg-[#EDE9FE] text-[#5B21B6] rounded-[4px]">{msg.attemptId}</span>}
                       {msg.displayOnly && <span className="text-[12px] px-1.5 py-0.5 bg-[#FEF3C7] text-[#92400E] rounded-[4px]">activity</span>}
+                      {!msg.displayOnly && <MessageAudience message={msg} />}
                       {msg.displayOnly && msg.nodeRunId && onViewNode && (
                         <button type="button" className="text-[12px] text-[#3659E3] hover:underline" onClick={() => onViewNode(msg.nodeRunId!)}>view progress</button>
                       )}
@@ -2435,6 +2500,20 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
                 icon={<Paperclip size={13} aria-hidden />} onClick={() => fileInputRef.current?.click()}>Attach</Button>
             </div>
           </div>
+          <div className="flex items-center gap-3 mt-2 text-[12px] text-[#475569] flex-wrap">
+            <label className="flex items-center gap-1">
+              For
+              <select aria-label="Message for" value={targetNodeKey} onChange={e => setTargetNodeKey(e.target.value)} disabled={isOffline}
+                className="border border-[#CDD5DF] rounded-[4px] px-1 py-0.5 text-[12px] bg-white">
+                <option value="">every node</option>
+                {nodeKeys.map(k => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={nextAttemptOnly} onChange={e => setNextAttemptOnly(e.target.checked)} disabled={isOffline} />
+              only the next attempt{targetNodeKey ? ` of ${targetNodeKey}` : ''}
+            </label>
+          </div>
           <p aria-live="polite" className="sr-only">
             {attachMutation.isPending ? 'Uploading attachment…' : attachMutation.isSuccess ? 'Attachment uploaded.' : ''}
           </p>
@@ -2442,6 +2521,24 @@ function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: 
       </div>
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
+  );
+}
+
+/**
+ * V12-18: which prompts a person's message reaches — every node, one node, and/or only the next attempt (then whether it was
+ * delivered, after which no later attempt gets it).
+ */
+function MessageAudience({ message }: { message: MessageRef }) {
+  if (!message.targetNodeKey && !message.nextAttemptOnly) return null;
+  const who = message.targetNodeKey ? `for ${message.targetNodeKey}` : 'for every node';
+  const label = message.nextAttemptOnly
+    ? `${who}, next attempt only — ${message.delivered ? 'delivered' : 'waiting'}`
+    : who;
+  return (
+    <span data-testid={`audience-${message.messageId}`}
+      className={`text-[12px] px-1.5 py-0.5 rounded-[4px] ${message.nextAttemptOnly && message.delivered ? 'bg-[#F3F5F8] text-[#475569]' : 'bg-[#E0F2FE] text-[#075985]'}`}>
+      {label}
+    </span>
   );
 }
 
@@ -2497,6 +2594,16 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
     enabled: !isOffline && !!activeRunId,
   });
 
+  // V12-18: the nodes a chat message can be aimed at — the AGENT nodes of the newest run's workflow.
+  const chatRunId = activeRunId ?? [...(cardQuery.data?.runs ?? [])].sort((a, b) => b.runNumber - a.runNumber)[0]?.runId;
+  const chatNodesQuery = useQuery({
+    queryKey: ['runGraphNodes', chatRunId],
+    queryFn: async () => (await getRunGraph(chatRunId!, { ...withSessionToken(), query: { limit: '1' } })) as unknown as RunGraphResponse,
+    enabled: !isOffline && !!chatRunId && activeTab === 'task-chat',
+    staleTime: 60_000,
+  });
+  const chatNodeKeys = (chatNodesQuery.data?.nodes ?? []).filter(n => n.type === 'AGENT').map(n => n.key);
+
   const onActionSettled = () => {
     queryClient.invalidateQueries({ queryKey: ['workItemAuthoritative', projectId, workItemId] });
     queryClient.invalidateQueries({ queryKey: ['taskFamily', projectId, familyId] });
@@ -2505,6 +2612,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
     queryClient.invalidateQueries({ queryKey: ['runGraph', projectId, activeRunId] });
     queryClient.invalidateQueries({ queryKey: ['runTimeline', projectId, activeRunId] });
     queryClient.invalidateQueries({ queryKey: ['kanban', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['workItemRedoPreview', workItemId] });
   };
 
   return (
@@ -2516,14 +2624,15 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
         runDiagnostics={runDiagnosticsQuery.data} onActionSettled={onActionSettled}
       />
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
+      {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} workItemId={workItemId} isOffline={isOffline} />}
       {activeTab === 'task-graph'      && (
-        <GraphTimelineTab projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled}
-          focusNodeRunId={focusNodeRunId} onOpenEvidence={nodeKey => { setEvidenceNode(nodeKey); onTabChange('task-evidence', { projectId, taskId: workItemId }); }} />
+        <GraphTimelineTab workItemId={workItemId} projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled}
+          focusNodeRunId={focusNodeRunId} onOpenEvidence={nodeKey => { setEvidenceNode(nodeKey); onTabChange('task-evidence', { projectId, taskId: workItemId }); }}
+          runs={cardQuery.data?.runs} />
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} nodeFilter={evidenceNode} onNodeFilterChange={setEvidenceNode} />}
-      {activeTab === 'task-chat'       && <ChatTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} onViewNode={nodeRunId => { setFocusNodeRunId(nodeRunId); onTabChange('task-graph', { projectId, taskId: workItemId }); }} />}
+      {activeTab === 'task-chat'       && <ChatTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} nodeKeys={chatNodeKeys} onViewNode={nodeRunId => { setFocusNodeRunId(nodeRunId); onTabChange('task-graph', { projectId, taskId: workItemId }); }} />}
       </div>
     </div>
   );

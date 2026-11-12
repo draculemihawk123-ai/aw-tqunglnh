@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
@@ -20,6 +21,20 @@ import (
 // runtime.TerminationReasonAdapterBuildDrift; VerifyNoDrift itself never
 // touches the Attempt/NodeRun state machine.
 var ErrAdapterBuildDrifted = errors.New("adapterbuild: configured executable no longer matches the registered build it was pinned against")
+
+// ErrAdapterBuildProbeFailed (V12-04, UX-16) is VerifyNoDrift's answer when it could not MEASURE the executable at all — the file
+// could not be read, or the capability probe (`<cli> --version`) did not run ("claude.exe --version" exited 0xC0000142 on a worker
+// that had lost its console). That says nothing about whether the CLI changed, so it is not ErrAdapterBuildDrifted: admission
+// blocks the node with ADAPTER_PROBE_FAILED (retryable as is), never with ADAPTER_BUILD_DRIFT (which needs a new build).
+var ErrAdapterBuildProbeFailed = errors.New("adapterbuild: the configured executable could not be probed")
+
+// ProbeAttempts and ProbeRetryDelay bound how often VerifyNoDrift retries a capability probe that failed to run before it reports
+// ErrAdapterBuildProbeFailed (a transient failure — a busy machine, a slow antivirus scan — passes on the next try). Variables so a
+// test can shorten the delay.
+var (
+	ProbeAttempts   = 3
+	ProbeRetryDelay = 2 * time.Second
+)
 
 // VerifyNoDrift re-measures, right now, exactly what ProbeAdapterBuild
 // measured at registration time — the executable's own content hash and a
@@ -48,16 +63,41 @@ var ErrAdapterBuildDrifted = errors.New("adapterbuild: configured executable no 
 // transaction re-verifies" caller in this codebase (schedule.go's own
 // RuntimeExecutionConfigProvider.Resolve is the closest sibling).
 func VerifyNoDrift(ctx context.Context, executor ports.AgentExecutor, pinned adapterbuild.Build) error {
+	measured, err := MeasureCurrent(ctx, executor, pinned)
+	if err != nil {
+		return err
+	}
+	freshID, err := measured.Tuple.ID()
+	if err != nil {
+		return fmt.Errorf("%w: compute observed build identity: %v", ErrAdapterBuildDrifted, err)
+	}
+	if freshID != pinned.ID() {
+		return fmt.Errorf("%w: observed build %s, pinned build %s", ErrAdapterBuildDrifted, freshID, pinned.ID())
+	}
+	return nil
+}
+
+// Measured is what MeasureCurrent observed: the tuple the configured executable produces now and its capability manifest.
+type Measured struct {
+	Tuple    adapterbuild.CandidateTuple
+	Manifest adapterbuild.CapabilityManifest
+}
+
+// MeasureCurrent (V12-05) re-measures the executable pinned names — exactly what VerifyNoDrift compares — and returns the tuple
+// and manifest it produces now, so a caller can register it as the new build ("Use the new CLI"). ExecutablePath and
+// ConfigIdentity are carried over from pinned. Real I/O; never inside a transaction. A measurement that could not be made is
+// ErrAdapterBuildProbeFailed.
+func MeasureCurrent(ctx context.Context, executor ports.AgentExecutor, pinned adapterbuild.Build) (Measured, error) {
 	pinnedTuple := pinned.Tuple()
 
 	contentHash, err := HashExecutableFile(pinnedTuple.ExecutablePath)
 	if err != nil {
-		return fmt.Errorf("%w: measure executable %q: %v", ErrAdapterBuildDrifted, pinnedTuple.ExecutablePath, err)
+		return Measured{}, fmt.Errorf("%w: measure executable %q: %v", ErrAdapterBuildProbeFailed, pinnedTuple.ExecutablePath, err)
 	}
 
-	capabilities, err := executor.Capabilities(ctx)
+	capabilities, err := probeCapabilities(ctx, executor)
 	if err != nil {
-		return fmt.Errorf("%w: probe capabilities: %v", ErrAdapterBuildDrifted, err)
+		return Measured{}, fmt.Errorf("%w: probe capabilities of %q (%d attempts): %v", ErrAdapterBuildProbeFailed, pinnedTuple.ExecutablePath, ProbeAttempts, err)
 	}
 	manifest := adapterbuild.CapabilityManifest{
 		SupportsStart:       capabilities.SupportsStart,
@@ -67,27 +107,48 @@ func VerifyNoDrift(ctx context.Context, executor ports.AgentExecutor, pinned ada
 	}
 	_, manifestHash, err := adapterbuild.HashCapabilityManifest(manifest)
 	if err != nil {
-		return fmt.Errorf("%w: hash observed capability manifest: %v", ErrAdapterBuildDrifted, err)
+		return Measured{}, fmt.Errorf("%w: hash observed capability manifest: %v", ErrAdapterBuildDrifted, err)
 	}
 
-	freshTuple := adapterbuild.CandidateTuple{
-		ProviderKey:            pinnedTuple.ProviderKey,
-		ExecutablePath:         pinnedTuple.ExecutablePath,
-		ExecutableContentHash:  contentHash,
-		ProtocolVersion:        capabilities.ProtocolVersion,
-		CapabilityManifestHash: manifestHash,
-		OS:                     runtime.GOOS,
-		Toolchain:              runtime.Version(),
-		ConfigIdentity:         pinnedTuple.ConfigIdentity,
+	return Measured{
+		Tuple: adapterbuild.CandidateTuple{
+			ProviderKey:            pinnedTuple.ProviderKey,
+			ExecutablePath:         pinnedTuple.ExecutablePath,
+			ExecutableContentHash:  contentHash,
+			ProtocolVersion:        capabilities.ProtocolVersion,
+			CapabilityManifestHash: manifestHash,
+			OS:                     runtime.GOOS,
+			Toolchain:              runtime.Version(),
+			ConfigIdentity:         pinnedTuple.ConfigIdentity,
+		},
+		Manifest: manifest,
+	}, nil
+}
+
+// probeCapabilities runs executor.Capabilities up to ProbeAttempts times, waiting ProbeRetryDelay between tries.
+func probeCapabilities(ctx context.Context, executor ports.AgentExecutor) (ports.AgentCapabilities, error) {
+	attempts := ProbeAttempts
+	if attempts < 1 {
+		attempts = 1
 	}
-	freshID, err := freshTuple.ID()
-	if err != nil {
-		return fmt.Errorf("%w: compute observed build identity: %v", ErrAdapterBuildDrifted, err)
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			timer := time.NewTimer(ProbeRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ports.AgentCapabilities{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		capabilities, err := executor.Capabilities(ctx)
+		if err == nil {
+			return capabilities, nil
+		}
+		lastErr = err
 	}
-	if freshID != pinned.ID() {
-		return fmt.Errorf("%w: observed build %s, pinned build %s", ErrAdapterBuildDrifted, freshID, pinned.ID())
-	}
-	return nil
+	return ports.AgentCapabilities{}, lastErr
 }
 
 func canonicalEventKindStrings(kinds []ports.AgentEventKind) []string {

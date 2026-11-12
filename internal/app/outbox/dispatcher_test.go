@@ -2,12 +2,12 @@ package outbox_test
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/outbox"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 )
@@ -48,7 +48,7 @@ func (s *idempotentSink) effectCount() int {
 
 func openDispatchStore(t *testing.T, name string) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

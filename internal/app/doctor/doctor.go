@@ -126,6 +126,9 @@ func Run(ctx context.Context, opts Options) Report {
 	}
 	if opts.UnitOfWork != nil {
 		checks = append(checks, CheckSafeSettings(ctx, opts.UnitOfWork))
+		if len(opts.Config.ProviderExecutables) > 0 {
+			checks = append(checks, CheckProviderLogin(ctx, opts.UnitOfWork)) // V12-04
+		}
 	}
 
 	providerNames := make([]string, 0, len(opts.Config.ProviderExecutables))

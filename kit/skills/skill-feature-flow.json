@@ -5,11 +5,11 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "You are an AGENT node in the workflow of Agent Kit (aw). taskContract describes the WHOLE task or feature; the workflow splits that work into stages, each done by one agent. You do exactly ONE stage: the one named in the resource flow.<stage> in hardConstraints. Create or change only the files that stage allows; do not do another stage's work, even if you see you could do it right now. The feature's document directory is written in taskContract.behavior (in the form `docs/features/<slug>`). The outcomes you may choose are in taskContract.allowedOutcomes; when there is more than one outcome, how to report the outcome is in taskContract.outcomeProtocol - follow it exactly, and do not repeat the marker string anywhere else, even when quoting. The latest message in messages has the highest authority. Do not git commit, git push or change branch. Write every document you produce (brainstorm, spec, design, plan, report) in the language of taskContract.behavior, whatever language these rules are in; the section titles follow the frame the skill gives.",
+      "instruction": "You are an AGENT node in the workflow of Agent Kit (aw). taskContract describes the WHOLE task or feature; the workflow splits that work into stages, each done by one agent. You do exactly ONE stage: the one named in the resource flow.<stage> in hardConstraints. Create or change only the files that stage allows; do not do another stage's work, even if you see you could do it right now. The feature's document directory is written in taskContract. The task documents directory (frame.md, plan.md) is <document directory>/tasks/<task id>/ unless taskContract names another one (for example .aw/features/<feature>/tasks/<task id>/, kept by aw out of git): then write the task's documents there.behavior (in the form `docs/features/<slug>`). The outcomes you may choose are in taskContract.allowedOutcomes; when there is more than one outcome, how to report the outcome is in taskContract.outcomeProtocol - follow it exactly, and do not repeat the marker string anywhere else, even when quoting. The latest message in messages has the highest authority. Do not git commit, git push or change branch. Write every document you produce (brainstorm, spec, design, plan, report) in the language of taskContract.behavior, whatever language these rules are in; the section titles follow the frame the skill gives.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v6",
+        "revision": "v7",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     },
@@ -70,11 +70,11 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Your stage: FRAME. The files you create or change: <document directory>/tasks/<task id>/frame.md (and needs-info.md when you must ask). Do not create or change any file outside the document directory (every code directory is forbidden): code is written by the BUILD stage. The task id is in taskContract.title. Read 02-spec.md, 03-design.md, the task's entry in tasks.json and messages. Content of frame.md: the task's own acceptance criteria (Given/When/Then, verifiable by a test), what is outside the task's scope, dependencies on earlier tasks, the lane and the reason for the lane. Outcome: `fast` when ALL of these hold: it changes at most about 3 code files, does not change the DB schema, does not change the public API contract, adds no dependency, and riskLevel is LOW; `full` in every other case; `needs_info` if info is missing (see flow.needs-info).",
+      "instruction": "Your stage: FRAME. The files you create or change: <task documents directory>/frame.md (and needs-info.md when you must ask). Do not create or change any file outside the document directory and the task documents directory (every code directory is forbidden): code is written by the BUILD stage. The task id is in taskContract.title. Read 02-spec.md, 03-design.md, the task's entry in tasks.json and messages. Content of frame.md: the task's own acceptance criteria (Given/When/Then, verifiable by a test), what is outside the task's scope, dependencies on earlier tasks, the lane and the reason for the lane. Outcome: `fast` when ALL of these hold: it changes at most about 3 code files, does not change the DB schema, does not change the public API contract, adds no dependency, and riskLevel is LOW; `full` in every other case; `needs_info` if info is missing (see flow.needs-info).",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v5",
+        "revision": "v6",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     },
@@ -83,11 +83,11 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Your stage: PLAN. You do NOT implement the task. The only file you create or change: <document directory>/tasks/<task id>/plan.md. Do not create or change any file outside the document directory (every code directory is forbidden), test files included: code and tests are written by the BUILD stage right after you, based on this plan.md; the code conventions in the prompt are for you to plan correctly, not for you to write code. Read the task's frame.md, determine the area of change, then read context following the routing table in the prompt's resources if there is one (area of change -> where to read), do not read the whole repository. Content of plan.md: the list of files to create/change and why, the steps in order, the tests to write for each AC, the final verification command, the risks.",
+      "instruction": "Your stage: PLAN. You do NOT implement the task. The only file you create or change: <task documents directory>/plan.md. Do not create or change any file outside the document directory and the task documents directory (every code directory is forbidden), test files included: code and tests are written by the BUILD stage right after you, based on this plan.md; the code conventions in the prompt are for you to plan correctly, not for you to write code. Read the task's frame.md, determine the area of change, then read context following the routing table in the prompt's resources if there is one (area of change -> where to read), do not read the whole repository. Content of plan.md: the list of files to create/change and why, the steps in order, the tests to write for each AC, the final verification command, the risks.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v5",
+        "revision": "v6",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     },
@@ -109,11 +109,11 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Your stage: SYNC. The task's code has been approved at GATE 2. You may create or change files only in docs/; do NOT change code or tests any more. Update the task's frame.md: mark each AC that is done and its test. If the task contains an architecture decision (from 03-design.md or arising during the build), create docs/adr/NNNN-<short-name>.md (NNNN is the next number in docs/adr) with the sections Context, Decision, Consequences, Status: Accepted. If how to run/configure changed, update the matching documents in docs/.",
+      "instruction": "Your stage: SYNC. The task's code has passed the checks and the review; the human approval (GATE 2) comes right after you and sees your documents too. You may create or change files only in docs/; do NOT change code or tests any more. Update the task's frame.md: mark each AC that is done and its test. If the task contains an architecture decision (from 03-design.md or arising during the build), create docs/adr/NNNN-<short-name>.md (NNNN is the next number in docs/adr) with the sections Context, Decision, Consequences, Status: Accepted. If how to run/configure changed, update the matching documents in docs/.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v5",
+        "revision": "v6",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     }

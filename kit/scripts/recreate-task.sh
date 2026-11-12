@@ -6,10 +6,12 @@
 # bản CŨ vì WorkItem ghim đúng một version).
 # Cách dùng: recreate-task.sh <workItemId> "lý do" ["ghi chú cho agent"]
 # Biến tùy chọn: CARRY_MESSAGES=0 không mang các ghi chú của người vận hành sang WorkItem mới (mặc định có);
-#                OUT_OF_SCOPE=KEEP|PARK xử lý file run trước để lại ngoài scope (xem retry-task.sh);
+#                OUT_OF_SCOPE=KEEP|PARK|PARK_ALL xử lý file run trước để lại ngoài scope (xem retry-task.sh);
 #                WAIT_SECONDS (mặc định 2700), xem watch-run.sh.
 # Không dùng được cho WorkItem gốc (root) và chỉ khi mọi run của WorkItem đã kết thúc.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 work_item=$1 reason=$2 note=${3:-}
 out=$(mktemp) err=$(mktemp)

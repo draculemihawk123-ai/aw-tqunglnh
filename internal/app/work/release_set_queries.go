@@ -134,6 +134,7 @@ type ReleaseSetLocalCommitStatus struct {
 	FailureReason           string     `json:"failureReason,omitempty"`
 	ParentVCSObjectID       string     `json:"parentVcsObjectId,omitempty"`
 	ResultVCSObjectID       string     `json:"resultVcsObjectId,omitempty"`
+	FailureDetail           string     `json:"failureDetail,omitempty"` // V12-01: why an EXECUTION_ERROR happened (redacted)
 	JobID                   string     `json:"jobId"`
 	CreatedAt               time.Time  `json:"createdAt"`
 	CompletedAt             *time.Time `json:"completedAt,omitempty"`
@@ -146,7 +147,7 @@ func releaseSetLocalCommitStatus(intent workdomain.ReleaseSetLocalCommit) Releas
 		RepositoryWorkspaceID: intent.RepositoryWorkspaceID, RepositoryID: string(intent.RepositoryID),
 		State: string(intent.State), FailureReason: string(intent.FailureReason),
 		ParentVCSObjectID: intent.ParentVCSObjectID, ResultVCSObjectID: intent.ResultVCSObjectID,
-		JobID: intent.JobID, CreatedAt: intent.CreatedAt, CompletedAt: intent.CompletedAt, Version: intent.Version,
+		FailureDetail: intent.FailureDetail, JobID: intent.JobID, CreatedAt: intent.CreatedAt, CompletedAt: intent.CompletedAt, Version: intent.Version,
 	}
 }
 

@@ -26,7 +26,7 @@ func init() {
 func Show(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("run show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

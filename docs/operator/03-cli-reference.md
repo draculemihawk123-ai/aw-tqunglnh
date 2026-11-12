@@ -28,26 +28,26 @@ Resource commands (aw <resource> <action> [flags]):
   blocker                resolve
   component              list
   context-snapshot       show
-  definition             create|list|publish|show|validate|versions
+  definition             create|list|manifest-run|manifest-status|publish|show|validate|versions
   doctor
   events                 watch
   evidence               list|show|verify
   health                 live|ready
   message                append|content|context-snapshot|list|upload-attachment
-  node-run               retry-blocked
+  node-run               events|prompt|retry-blocked|show
   pack-assignment        assign|list
-  project                create|list|show
+  project                archive|commit-template|create|list|rename|restore|set-commit-template|set-task-documents|show|task-documents
   projection             rebuild|rebuild-status|status
   release-set            abandon|create|list|local-commit|local-commit status|seal|show
-  repository             list|onboarding|readiness|register|retry-probe|show
-  repository-workspace   adopt-head|diff|log|reconcile|restore-parked|show|source
-  run                    cancel|diagnostics|graph|show|start|timeline
+  repository             check|delete|disable|list|onboarding|readiness accept-exception|readiness set|readiness show|readiness verify|register|retry-probe|run-app set|run-app show|secret delete|secret list|secret set|show|update
+  repository-workspace   adopt-head|aw-documents export|aw-documents list|base-status|diff|log|merge|pull-request|push|reconcile|remote|restore-parked|run-app start|run-app status|run-app stop|show|source|sync-base
+  run                    cancel|costs|diagnostics|graph|needs-you|show|start|timeline
   scope-expansion        approve|list|reject|request|show|withdraw
   settings               show|update
   task-family            show
   version                diff|show
   wait                   signal
-  work-item              cancel|children|create|create-child|detail|kanban|list|mark-ready|readiness|show
+  work-item              budget|cancel|children|create|create-child|detail|kanban|list|mark-ready|queue|queue-show|readiness|recreate|redo-preview|retry|show|use-new-cli
   workspace-set          release|release-context|show
 
 Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
@@ -118,6 +118,7 @@ UI you can script. Most are `show`/`list`; the ones whose name or arguments are 
 | Command | Reads |
 |---|---|
 | `aw work-item kanban --project-id <p> [--status <S>]... [--family-id <f>]` | The board: **projected** cards (status, blocker count, active run, run count, repository badges) plus `freshness`. A `STALE` board is a real answer, not an error. `--status` repeats. |
+| `aw work-item queue-show <workItemId>` | The queue of the work item's family (V12-19): entries in order (`QUEUED`/`STARTED`, the run the queue started, why the head could not start) and `waiting` — what the next task waits for. |
 | `aw work-item detail --project-id <p> <workItemId>` | One card (projected, possibly stale) next to its **freshly recomputed** readiness and the **authoritative** `runs` list — every run the work item has had, oldest first. Act on `readiness`, never on `card`. |
 | `aw work-item list` / `aw work-item show` | The **authoritative** list / detail, straight from the work-item rows. |
 | `aw work-item children --project-id <p> <workItemId>` | The work item's direct children (not grandchildren). |
@@ -163,12 +164,15 @@ blocker of a work item is resolved the work item becomes `READY`, so `aw run sta
 The failure loop for `RUN_FAILED` — resolve, then `aw run start` again on the same work item — is in
 [09-troubleshooting.md](09-troubleshooting.md).
 
-## Positional arguments come after flags
+## Flags and positional arguments, in any order (V12-27)
 
-Every resource command that takes a positional argument (an ID) expects flags FIRST, then the positional
-argument last — standard Go `flag` package behavior (it stops recognizing flags at the first non-flag
-argument). `aw definition publish --kind POLICY --yes my-policy-id` works; `aw definition publish my-policy-id
---kind POLICY --yes` does not (the reordered flags are read as extra positional arguments and rejected).
+A resource command reads its flags wherever they are written: `aw evidence list <workItemId> --project-id <p>` and
+`aw evidence list --project-id <p> <workItemId>` are the same command, as are `aw definition publish my-policy-id --kind POLICY
+--yes` and `aw definition publish --kind POLICY --yes my-policy-id`. (Before V12-27 Go's `flag` package stopped at the first
+positional argument, so a flag after it was silently not read and the command printed its usage.) An unknown flag is an error
+wherever it is; a flag that takes a value takes the next argument (or `--flag=value`); `--` ends the flags, so an argument that
+starts with `-` can still be passed after it. The global options (`--db`, `--artifact-root`, …) still go before the resource
+name, as `aw help` shows.
 
 ## Two worked examples (real, verified)
 

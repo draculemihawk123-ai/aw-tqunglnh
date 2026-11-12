@@ -48,6 +48,12 @@ Usage of serve:
         bind port (0 = OS-assigned ephemeral port)
   -principal-config string
         path to a trusted JSON config file's localPrincipal.actor/localPrincipal.roles (ADR-028); omitted or missing means the local-operator/[operator] default — this is the only allowed way to select a principal, there is no --actor/--role flag
+  -gh string
+        GitHub CLI used for pull requests (signed in with `gh auth login`; aw keeps no token) (default "gh")
+  -project-manifest value
+        <projectId>=<path to aw-project.json>: the UI's Project definitions page runs the kit's aw-publish.py on it (repeatable; omitted = the page shows the command to run instead)
+  -python string
+        Python interpreter that runs the kit's aw-publish.py for --project-manifest (empty = python on Windows, where python3 is usually the Microsoft Store alias, python3 elsewhere)
   -ui-dist pnpm build
         directory containing a built V7 UI (pnpm build output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7
   -warn-hard-constraints int
@@ -69,6 +75,12 @@ back to "no UI" exactly as before V8-08.
 warnings a definition publish reports — see [04-authoring-workflows.md](04-authoring-workflows.md#keeping-knowledge-honest--warnings-at-publish-and-instruction-files-v9-10).
 `aw definition publish` takes the same two as `--warn-resource-age-days` / `--warn-hard-constraints` for a single
 invocation. `aw worker --instruction-file-warn-bytes` sets the oversize limit recorded with each instruction file.
+
+`--project-manifest <projectId>=<path>` (V12-21, repeatable) names a project's `aw-project.json`; the Definitions page
+of that project then has **Check** and **Publish…**, which run the kit's `aw-publish.py` (found next to the `kit.json`
+the manifest names, in `scripts/`) with `--python`, this `aw` binary and this server's `--db`/`--artifact-root`/
+`--workspace-root`/`--claude-executable` — see [04-authoring-workflows.md](04-authoring-workflows.md#publishing-from-the-ui-v12-21).
+The path is read at startup; a request can never name another file.
 
 `--host`/`--port` only ever bind loopback — an external bind is refused at startup, never merely a config
 recommendation (`docs/design/01-system-design.md`'s own "external bind bị từ chối").

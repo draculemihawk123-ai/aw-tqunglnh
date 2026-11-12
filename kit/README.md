@@ -43,7 +43,7 @@ kit/
 ├── layers/                     # layer-stack-spring-sqlite, layer-stack-react-vite, layer-api-design, layer-sql-quality,
 │                               # layer-backend-security, layer-react-quality, layer-frontend-testing
 ├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec, skill-design, skill-plan, skill-build, skill-debug, skill-test, skill-security, skill-docs
-├── workflows/                  # wf-feature-definition, wf-task-delivery, wf-task-delivery-plus, wf-bugfix, wf-retro (mẫu, có chỗ trống cho project điền)
+├── workflows/                  # wf-feature-definition, wf-task-delivery, wf-task-delivery-plus, wf-bugfix, wf-bugfix-ui, wf-qa, wf-retro (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
 ├── drafts/                     # bản nháp do import-skill.py sinh (git bỏ qua, không bao giờ publish)
 └── tests/check-kit.sh          # kiểm tra tự động (mục 7)
@@ -112,17 +112,30 @@ flowchart LR
   G1 -->|passed| SZ{size}
   SZ -->|large| SM[simplify] --> G1
   SZ -->|passed| Q{quality}
-  SM -->|escalated| X
+  SM -->|"escalated (sau 3 lần) / no_change"| SR[[size-review người duyệt]]
+  SR -->|accept| Q
+  SR -->|rework| B
+  SR -->|rejected| X
   Q -->|failed| B
   Q -->|passed| R[review<br/>CHECKER độc lập]
   R -->|rework| B
-  R -->|approved| G2[[gate2 người duyệt]]
+  R -->|approved| S[sync<br/>chỉ ghi docs/] --> G2[[gate2 người duyệt<br/>duyệt kèm commit]]
   G2 -->|revise| B
-  G2 -->|approved| S[sync] --> E((end))
+  G2 -->|approved| E((end))
   B -->|escalated| X[reject]
   P -->|escalated| X
   G2 -->|rejected| X
 ```
+
+`taskDocuments` (V12-33, ADR-065) trong `aw-project.json`: `"repo"` (mặc định) ghi `frame.md`, `plan.md` vào
+`docs/features/<feature>/tasks/<task>/` của repo; `"aw"` ghi vào `.aw/features/<feature>/tasks/<task>/` của worktree (git bỏ qua, xem và
+**Export to repo** trên tab Workspace). `02-spec.md`, `03-design.md`, `tasks.json` luôn ở trong repo.
+
+`wf-qa` (V12-31) là một cổng duyệt có **checklist QA** (hoàn thành theo `policy-completion-qa`: một người đã quyết định): mỗi tiêu chí chấp nhận của task là một mục, người QA đánh đạt/không đạt
+(ghi chú bắt buộc khi không đạt, đính ảnh), outcome đi theo các mục; mục không đạt có nút **Create fix task**. `wf-bugfix-ui` dành cho
+UI chưa có bộ test: agent `repro` viết script trình duyệt `.aw-qa/*.mjs` (Playwright, không thêm vào `package.json`), `ui-expect-fail`
+cho qua khi script báo lỗi, `ui-verify` sau `gate1` cho qua khi mọi script đạt, `gate2` là checklist có ảnh trước/sau. Chi tiết và yêu
+cầu (Playwright cài ngoài project, `NODE_PATH`, ứng dụng chạy bằng Run app): docs/operator/04-authoring-workflows.md.
 
 `wf-bugfix` bắt buộc có **test đỏ trước khi sửa**: agent `repro` chỉ được viết test tái hiện, bước `expect-fail` (Command) chạy bộ test và
 chỉ cho qua khi test **đang đỏ vì đúng một lỗi test**, rồi agent `fix` mới sửa:
@@ -141,6 +154,16 @@ flowchart LR
 ```
 
 Điều cần biết khi dùng:
+
+- **Diff lớn không còn bị đóng task (V12-06, kit 1.9.0).** `simplify` chạy tối đa 3 lần; hết lượt mà `size` vẫn `large`, hoặc
+  agent báo `no_change` (không gọn được gì), run tới cổng người `size-review`: **accept** (chấp nhận diff lớn, đi tiếp `quality`),
+  **rework** (về `build` kèm message của bạn, ví dụ tách bớt) hoặc **rejected**. Cổng hiện output của `size`, có số liệu từng
+  component. Ngưỡng theo component: file `.aw-diff-size` ở gốc repo, mỗi dòng `<tiền tố> <số dòng> <số file> <số dòng một file>`
+  (ví dụ `backend/ 800 15 300`); file không khớp tiền tố nào dùng ngưỡng mặc định (400/8/200).
+- **`sync` chạy TRƯỚC `gate2` (V12-02, kit 1.8.0).** Trước đây `sync` chạy sau khi người duyệt; `sync` hỏng (ví dụ ghi file ngoài scope)
+  thì cả run `FAILED` dù code đã được duyệt, và `gate2` không duyệt kèm commit được (engine cấm commit lúc quyết định khi node sau còn
+  ghi worktree). Nay người duyệt xem cả code lẫn tài liệu, `gate2` có `release: {commit: OFFERED}` và là bước cuối. `run-task.sh` thêm
+  `docs` vào `pathScopes` của scope WRITE cho `wf-task-delivery*` (đặt `NO_SYNC_DOCS=1` để giữ nguyên contract).
 
 - **Agent `debug` không nhận kết quả của kiểm tra đỏ.** Engine chỉ đưa `checkFailures` cho agent sửa đi thẳng từ một kiểm tra; một CHECKER
   nhận yêu cầu, diff và evidence nhưng prompt không có đoạn lỗi (đã kiểm bằng `walk-workflow.py`, xem dưới). Vì vậy `debug.diagnosis-report`

@@ -44,7 +44,7 @@ func usageErrorf(format string, args ...any) error {
 // parse failure as a cli.UsageError and passing flag.ErrHelp through
 // unwrapped.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return err
 		}

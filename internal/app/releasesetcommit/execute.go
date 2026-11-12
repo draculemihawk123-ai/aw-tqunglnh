@@ -71,6 +71,10 @@ type ExecuteReleaseSetLocalCommitDeps struct {
 	// the caller can open RELEASE_FAILED on the WorkItem atomically with the failure. It is wired
 	// by cmd/aw to internal/app/runtime, which this package cannot import (runtime imports it).
 	OnFailed func(ctx context.Context, tx ports.Tx, intent workdomain.ReleaseSetLocalCommit, reason workdomain.ReleaseSetLocalCommitFailureReason) error
+	// Redact (V12-01), when set, masks secrets in the failure detail stored with an
+	// EXECUTION_ERROR failure; nil stores the detail as is (it is an error message of this
+	// worker, never agent output).
+	Redact func(string) string
 	// WriteLeaseTTL bounds how long a local commit write lease is held
 	// without this function itself renewing it — this operation's own real
 	// Git call is bounded/synchronous within one Handle() invocation (never
@@ -395,36 +399,60 @@ func failTerminal(
 	ctx context.Context, deps ExecuteReleaseSetLocalCommitDeps, jobLease ports.JobLease, intent workdomain.ReleaseSetLocalCommit,
 	reason workdomain.ReleaseSetLocalCommitFailureReason, now time.Time,
 ) error {
+	return failTerminalWithDetail(ctx, deps, jobLease, intent, reason, "", now)
+}
+
+// failTerminalWithDetail is failTerminal with a failure detail (V12-01).
+func failTerminalWithDetail(
+	ctx context.Context, deps ExecuteReleaseSetLocalCommitDeps, jobLease ports.JobLease, intent workdomain.ReleaseSetLocalCommit,
+	reason workdomain.ReleaseSetLocalCommitFailureReason, detail string, now time.Time,
+) error {
 	return deps.UnitOfWork.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 		if err := tx.Jobs().ValidateActiveJob(ctx, jobLease, aggregateType, string(intent.ID)); err != nil {
 			return err
 		}
-		if _, err := tx.Work().TransitionReleaseSetLocalCommitToFailed(ctx, ports.TransitionReleaseSetLocalCommitToFailedRequest{
-			ReleaseSetLocalCommitID: string(intent.ID), ExpectedVersion: intent.Version, FailureReason: reason, OccurredAt: now,
-		}); err != nil {
+		if err := closeFailedTx(ctx, tx, deps, intent, reason, detail, string(jobLease.JobID), now); err != nil {
 			return err
-		}
-		payload, err := json.Marshal(releaseSetLocalCommitFailedEventPayload{
-			ReleaseSetLocalCommitID: string(intent.ID), FailureReason: string(reason), JobID: string(jobLease.JobID),
-		})
-		if err != nil {
-			return fmt.Errorf("marshal %s event payload: %w", ReleaseSetLocalCommitFailedEventType, err)
-		}
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: string(intent.ID) + "-failed", ProjectID: string(intent.ProjectID),
-			AggregateType: aggregateType, AggregateID: string(intent.ID), Sequence: 2,
-			EventType: ReleaseSetLocalCommitFailedEventType, SchemaVersion: ReleaseSetLocalCommitFailedSchemaVersion,
-			PayloadJSON: string(payload), CreatedAt: now,
-		}); err != nil {
-			return err
-		}
-		if deps.OnFailed != nil {
-			if err := deps.OnFailed(ctx, tx, intent, reason); err != nil {
-				return err
-			}
 		}
 		return tx.Jobs().CompleteJob(ctx, jobLease)
 	})
+}
+
+// closeFailedTx moves intent from REQUESTED to FAILED with reason and detail, appends the failed
+// event and runs OnFailed, inside tx. It neither validates nor completes a job: failTerminal does
+// that for a live job, and CloseLocalCommitsWithDeadJob has no live job to validate.
+func closeFailedTx(
+	ctx context.Context, tx ports.Tx, deps ExecuteReleaseSetLocalCommitDeps, intent workdomain.ReleaseSetLocalCommit,
+	reason workdomain.ReleaseSetLocalCommitFailureReason, detail, jobID string, now time.Time,
+) error {
+	if _, err := tx.Work().TransitionReleaseSetLocalCommitToFailed(ctx, ports.TransitionReleaseSetLocalCommitToFailedRequest{
+		ReleaseSetLocalCommitID: string(intent.ID), ExpectedVersion: intent.Version, FailureReason: reason,
+		FailureDetail: detail, OccurredAt: now,
+	}); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(releaseSetLocalCommitFailedEventPayload{
+		ReleaseSetLocalCommitID: string(intent.ID), FailureReason: string(reason), FailureDetail: detail, JobID: jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal %s event payload: %w", ReleaseSetLocalCommitFailedEventType, err)
+	}
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: string(intent.ID) + "-failed", ProjectID: string(intent.ProjectID),
+		AggregateType: aggregateType, AggregateID: string(intent.ID), Sequence: 2,
+		EventType: ReleaseSetLocalCommitFailedEventType, SchemaVersion: ReleaseSetLocalCommitFailedSchemaVersion,
+		PayloadJSON: string(payload), CreatedAt: now,
+	}); err != nil {
+		return err
+	}
+	if deps.OnFailed != nil {
+		failed := intent
+		failed.FailureReason, failed.FailureDetail = reason, detail
+		if err := deps.OnFailed(ctx, tx, failed, reason); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // quarantineWorkspace calls WorkspaceLifecycle.QuarantineRepositoryWorkspace

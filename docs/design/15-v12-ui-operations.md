@@ -1,7 +1,10 @@
 # V12 — Vận hành aw trên giao diện: sửa bất cập từ dùng thật
 
-> Trạng thái: **ĐANG SOẠN, chưa triển khai.** Phần B (run graph) đã được product owner chốt 7 quyết định ngày 2026-11-03.
-> Các phần A, C, D mới chia task, chờ product owner duyệt thứ tự và phạm vi.
+> Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-11-03, nhánh `claude/admiring-brown-d1uf4r`). Phần B (run graph) đã được product
+> owner chốt 7 quyết định ngày 2026-11-03. Tiến độ: xem khối "Kết quả" dưới từng task.
+> Tiến độ tổng: phần A, B, C (V12-01 … V12-27) đã làm, việc còn để lại ghi trong khối "Kết quả" của từng task; phần D
+> (V12-28 … V12-33) có ADR-060 … ADR-065 đã duyệt ngày 2026-11-03, đang làm mã theo thứ tự. V12-32 chuyển sang V13
+> (product owner, 2026-11-04; `16-v13-remote-access.md`).
 > Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Exit: gate V12 ở cuối file.
@@ -81,7 +84,7 @@ Ngoài ra, sau UX-22, mọi commit phải làm bằng git rồi chạy `adopt-he
 | V12-29 | Kho secret theo repository | UX-34 | TB | engine, web, ADR |
 | V12-30 | Chạy ứng dụng (dev server) của worktree để QA tay | UX-32 | TB | engine, web |
 | V12-31 | QA trong aw: WorkItem loại QA; biến thể bugfix cho UI chưa có test | UX-33, UX-43 | TB | kit, engine, web |
-| V12-32 | Truy cập từ xa và màn duyệt cho điện thoại | UX-40 | Thấp | ADR bảo mật |
+| V12-32 | Truy cập từ xa và màn duyệt cho điện thoại — **chuyển sang V13** (`16-v13-remote-access.md`) | UX-40 | — | — |
 | V12-33 | Nơi lưu tài liệu trung gian của kit (`frame.md`, `plan.md`) | UX-45 | Thấp | kit, quyết định |
 
 Mặc định làm tuần tự theo Task ID. Phần B (V12-09 … V12-13) không phụ thuộc phần A về mã. Nếu product owner muốn thấy giao
@@ -102,6 +105,14 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
 - **Mục tiêu:** job commit hoặc thành công, hoặc kết thúc `FAILED` kèm lý do có kiểu, hiện trên giao diện và CLI. Có thao tác
   "thử commit lại" có kiểm soát (idempotency key, expected version).
 - **Test:** tái hiện treo bằng handler giả lập; job `DEAD` phải đóng bản ghi commit ở `FAILED`; worker ghi log lý do.
+- **Kết quả (đã xong, ADR-045):** khảo sát mã xác nhận nghi ngờ (2): `workerpool.runJob` bỏ lỗi handler, job chỉ đi tiếp qua lease
+  hết hạn, và không có gì đóng thao tác khi job `DEAD`. Nghi ngờ (1) không đúng: không có kiểm tra nào chặn commit mới vì thao tác cũ
+  còn `REQUESTED` (write lease của local commit chỉ giữ tối đa `--local-commit-write-lease-ttl`). Nguyên nhân gốc của lỗi handler ở
+  máy Windows chưa tái hiện được ở đây; nay nó hiện ra trong `failureDetail` và log. Đã làm: lý do `EXECUTION_ERROR` + cột
+  `failure_detail` (migration 0054); lượt claim cuối đóng `FAILED` cùng transaction hoàn tất job; worker quét job `DEAD` mỗi phút;
+  `OnHandlerError` ghi log; `RELEASE_FAILED` mang chi tiết; thử lại bằng yêu cầu mới (marker mới), `commit-task.sh` in lý do và nhận
+  `COMMIT_ATTEMPT`. Test: `releasesetcommit/execution_error_test.go` (Git + SQLite thật), `workerpool/pool_handler_error_test.go`.
+  Chưa chạy: lần chạy thật trên Windows.
 
 ### V12-02 — Lỗi ở bước sau cổng duyệt làm mất kết quả đã duyệt (UX-23)
 
@@ -112,6 +123,13 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   commit phần đã duyệt rồi đóng run có ghi chú.
 - **Thực hiện (đề xuất):** bật `release: {commit: OFFERED}` cho `gate2` của `wf-task-delivery-plus` và `wf-task-delivery`.
   Scope mặc định của `sync` cho phép `docs/`. Chạy lại từ node hỏng dùng chung cơ chế với V12-03.
+- **Kết quả (đã xong, kit 1.8.0):** đề xuất "bật `release` cho `gate2`" bị compiler từ chối đúng luật của ADR-040: `gate2 approved`
+  dẫn tới `sync`, một node còn ghi worktree, nên commit lúc quyết định sẽ tranh với nó. Thay vào đó đổi thứ tự trong
+  `wf-task-delivery` và `wf-task-delivery-plus`: `review`/`quality` → `sync` → `gate2` (có `release: {commit: OFFERED}`) → `END`.
+  Lỗi của `sync` nay xảy ra trước khi người duyệt, nên không còn kết quả đã duyệt nào bị mất; người duyệt xem cả tài liệu.
+  `run-task.sh` thêm `docs` vào `pathScopes` của scope WRITE cho `wf-task-delivery*` (`NO_SYNC_DOCS=1` để tắt), như
+  `split-tasks.sh` đã làm. Skill `flow.sync` v6 bỏ câu "đã được duyệt ở GATE 2". 11 scenario walk của bản plus cập nhật thứ tự;
+  `check-kit.sh` 79/79. Phần "chạy lại riêng node hỏng" làm ở V12-03.
 
 ### V12-03 — Chạy tiếp từ đúng node sau khi hết hạn mức (UX-15, UX-17)
 
@@ -125,6 +143,14 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
     giữ, cất (park vào ref ẩn) hoặc bỏ. Hiện chỉ có biến `OUT_OF_SCOPE=KEEP|PARK` của `retry-task.sh`.
 - **Ràng buộc:** cần xác minh xem rerun luôn chạy từ `START` là do thiết kế (ADR) hay do giới hạn hiện tại (guide V9 đã ghi
   khiếm khuyết này).
+- **Kết quả (đã xong, ADR-046):** khảo sát xác nhận rerun luôn từ `START` là thiết kế (ADR-033/041), nên không đổi; thay vào đó lỗi hạn
+  mức không còn làm hỏng run. Attempt AGENT `BLOCKED` lý do `PROVIDER_QUOTA_EXCEEDED`, NodeRun `BLOCKED`, blocker cùng tên (migration
+  0055), run vẫn `RUNNING`. `ParseQuotaReset` đọc giờ reset từ lời của CLI; job `PROVIDER_QUOTA_RESUME` chạy tiếp **đúng node** qua
+  `RetryBlockedActivation` (cùng pin, giữ `Iteration`), tối đa 6 lần mỗi node, mặc định sau 1 giờ khi không đọc được giờ. Nút Retry của
+  node bị chặn (validActions) và `aw node-run retry-blocked` dùng cùng đường. Thay đổi dở: hộp thoại Run Again / Redo có thêm **Park all**
+  (`PARK_ALL`, cất mọi thay đổi chưa commit vào ref ẩn; "bỏ" phá hủy không làm, cất là cách bỏ khôi phục được), CLI và
+  `retry-task.sh OUT_OF_SCOPE=PARK_ALL`. Test: `quota_resume_test.go` (chặn → job → chạy tiếp cùng node, idempotent; parser),
+  `agent_node_executor_test.go`, `redo_service_sqlite_test.go` (PARK_ALL), `TaskDetail.redo.test.tsx`. Chưa chạy: Claude thật hết hạn mức.
 
 ### V12-04 — Sức khỏe worker và provider (UX-16, UX-18, UX-07)
 
@@ -142,6 +168,14 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   - `doctor` kiểm tra trạng thái đăng nhập của provider. Khi chưa đăng nhập, attempt chờ ở trạng thái chặn có lý do rõ, không
     làm hỏng run.
   - Giao diện có danh sách worker đang chạy và nút Retry khi server cho phép.
+- **Kết quả (phần lớn đã xong, ADR-047):** `VerifyNoDrift` tách `ErrAdapterBuildProbeFailed` và thử probe 3 lần; admission có lý do/blocker
+  `ADAPTER_PROBE_FAILED` (retry được, không cần build mới). `ClaimGate` của worker pool: `aw worker` không nhận việc khi không chạy được
+  `git --version` (cache 30 giây), log `WORKER_CANNOT_SPAWN`. Lỗi khởi chạy tiến trình (spawn hoặc `0xC0000142`) ghi diagnostic
+  `PROCESS_START_FAILED` và hiện ở `failureDetail`. Lời "Invalid API key · Please run /login"/"OAuth token has expired" cho
+  `PROVIDER_LOGIN_REQUIRED`: node `BLOCKED`, run sống, `aw doctor` có check `provider_login`. Nút **Retry** trên thẻ blocker ở đầu trang
+  task. Migration 0056. **Chưa làm:** danh sách worker đang chạy trên giao diện (cần bảng heartbeat của worker; ghi lại cho task sau).
+  Test: `drift_test.go`, `admission_test.go` (probe hỏng → retry), `quota_resume_test.go` (đăng nhập), `command_node_executor_test.go`,
+  `pool_handler_error_test.go` (ClaimGate), `provider_login_test.go` (doctor), contract test provider, `TaskDetail.test.tsx`.
 
 ### V12-05 — Claude CLI tự cập nhật và nút Redo bị thiếu (UX-05, UX-06)
 
@@ -153,6 +187,13 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
 - **Mục tiêu:** trên node bị chặn vì drift có một thao tác "Use the new CLI and redo": đăng ký build mới, publish workflow
   version mới, recreate, có xác nhận. Nút Redo lấy từ cùng nguồn với `redo-preview`.
 - **Ràng buộc:** không tự repin run đang chạy; thao tác là lựa chọn rõ ràng của người vận hành.
+- **Kết quả (đã xong, ADR-048):** nguyên nhân hai nguồn lệch: nút chỉ đọc `validActions` của chẩn đoán run đang hiện trên thẻ; sau khi
+  hủy thẻ không còn run nên không có chẩn đoán. Nay khi thẻ không có run, nút Run Again / Redo lấy từ `getWorkItemRedoPreview`. Lệnh mới
+  `UseNewCli` (`POST /work-items/{id}/use-new-cli`, `aw work-item use-new-cli`, `internal/app/cliupgrade`): đo lại CLI của build đang ghim
+  (`adapterbuild.MeasureCurrent`), đăng ký build, publish version mới của workflow ghim build mới, tùy chọn redo (run còn sống thì trả
+  `nextStep`). Blocker drift có nút **Use the new CLI** kèm hộp thoại xác nhận. Test: `v5accept/cli_upgrade_test.go` (fake-claude thật,
+  SQLite thật: build mới, version 2 ghim build mới, run cũ không repin, replay), `TaskDetail.test.tsx`, `TaskDetail.redo.test.tsx`; route
+  inventory, security matrix, contract golden, generated.ts, UX doc.
 
 ### V12-06 — Vòng `size → simplify` không hội tụ (UX-26)
 
@@ -169,6 +210,12 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   3. `simplify` không đổi được gì so với lần trước thì sang cổng người ngay.
 - **Ràng buộc:** `diff-size` vẫn không bỏ qua được (V10-15). Component hiện chưa có trường cấu hình, nên cần migration, API,
   giao diện và ADR. Sửa workflow mẫu và `diff-size.sh` để đọc ngưỡng theo component.
+- **Kết quả (phần lớn đã xong, ADR-049, kit 1.9.0):** (1) cổng người `size-review` (accept/rework/rejected) sau khi `simplify` hết 3 lần;
+  cần ngoại lệ của ADR-036 vì cổng nằm trong vòng (rework → build): cạnh escalation được dẫn tới node APPROVAL trong vòng (compiler và
+  `advanceRunTx`). (3) `simplify` báo `no_change` thì tới cổng ngay. (2) ngưỡng theo component làm ở mức kit: file `.aw-diff-size` trong
+  repository, output có số liệu từng component; **chưa làm** phần đặt ngưỡng trên trang Components (cần migration/API/UI). Test:
+  `cycle_escalation_test.go`, 3 kịch bản walk mới (`plus-large-accept`, `plus-large-exhaust` sửa, `plus-simplify-no-change`; chạy với
+  engine thật), `check-kit.sh` có ca ngưỡng component (81/81). Đã chạy `WALK_ALL` cho mọi kịch bản (kể cả các kịch bản V12-02 sửa).
 
 ### V12-07 — Lỗi của kit (UX-17 phần kit, UX-19, UX-21, UX-11, UX-10)
 
@@ -181,6 +228,12 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
 - `context-check` dùng `os.killpg` nên không chạy trên Windows, và để lại một worker tạm mồ côi.
 - Script của kit in tiếng Việt lỗi font trong console CP437. Script phải tự đặt UTF-8 hoặc in ASCII.
 - **Test:** test của kit (`kit/tests`) cho từng lỗi, chạy trên Windows.
+- **Kết quả (đã xong ở mức kit; chưa chạy trên Windows):** `expect-fail` in dòng lỗi biên dịch có vị trí (`File.java:[l,c]`, `file.ts(l,c)`)
+  và chỉ cho qua khi test đỏ ở assertion (Maven: `Failures` > 0; `Errors` không kèm `Failures`, lỗi constraint/`@BeforeEach`/context
+  thì không đạt; frontend: phải có dòng assertion). `review-task.sh --commit` truyền `<repositoryWorkspaceId>` sau các cờ. `context-check.py`
+  dừng worker tạm bằng `taskkill /T` trên Windows (không dùng `os.killpg`), chờ nó thoát. Mọi script Python của kit in UTF-8 và đặt code
+  page console 65001 trên Windows; script bash gọi `chcp.com 65001`. Test: `check-kit.sh` 83/83 (2 ca `expect-fail` mới). Chưa có lần
+  chạy thật `review-task.sh --commit` trong check của kit (cần stack aw đầy đủ); lỗi cú pháp lệnh được sửa theo usage hiện tại.
 
 ### V12-08 — Một lệnh khởi động và khóa migration (UX-08)
 
@@ -188,6 +241,9 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   `duplicate column name`.
 - **Mục tiêu:** sửa tranh chấp migration trước, bằng khóa migration để hai tiến trình không chạy migration cùng lúc. Sau đó có
   một lệnh (ví dụ `aw up`) chạy cả serve và worker, dừng cả hai cùng nhau, ghi log về một chỗ.
+- **Kết quả (đã xong, ADR-050):** nguyên nhân: kiểm "đã áp dụng" nằm ngoài transaction. Nay kiểm lại dưới khóa ghi (`appliedInsideTx`),
+  chờ khóa tới 2 phút. Test `migration_lock_test.go` (4 tiến trình mở cùng một DB mới; trước khi sửa: `table projects already exists`).
+  `aw up` chạy serve + worker trong một tiến trình (`up.go`, `up_test.go`; đã chạy thật: cả hai báo sẵn sàng, Ctrl+C dừng cả hai).
 
 ---
 
@@ -292,6 +348,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - mọi cạnh có đường đi;
   - tập node thoát đúng, hình dạng đúng theo bảng;
   - các làn không cắt nhau theo quy tắc ở bước 4.
+- **Kết quả (đã xong):** `web/src/graph/layoutRunGraph.ts` (thuần, không React). Tinh chỉnh so với bước 3: "dài nhất" xếp sau "ít đường
+  vòng nhất" — đường vòng là cạnh không phải outcome khai báo đầu tiên của nút nguồn **và** nằm trong cùng một vòng (SCC) với nguồn; nếu
+  không, `size → simplify → size-review → quality` (V12-06) sẽ "dài hơn" luồng chính, còn `frame → build` (`fast` là outcome đầu) vẫn là
+  cạnh tắt. Hai cạnh vào cùng đích có làn lồng nhau thì làn ngoài vào cao hơn; hai khoảng xen kẽ (không lồng) không thể tránh cắt trên một
+  phía, test chỉ khẳng định cho cặp lồng nhau. Test: `layoutRunGraph.test.ts` (67 ca: mọi workflow của `kit/workflows` ở hai chế độ, một
+  workflow FORK/JOIN, fallback, quy tắc hình dạng, node thoát, làn). Chưa có fixture `wf-docs-change` của chochuyennha (không có trong repo).
 
 ### V12-10 — Vẽ sơ đồ mới
 
@@ -308,6 +370,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - P1-01: nhiều vòng, có node bị chặn rồi retry;
   - P2-01: hai run;
   - P0-03: chỉ sửa tài liệu.
+- **Kết quả (đã xong một phần):** `web/src/graph/RunGraphCanvas.tsx` thay canvas cũ trong tab Graph: hình dạng theo bảng, màu theo lần chạy
+  cuối (viền nét đứt khi chưa tới), dòng phụ là outcome cuối, `×n` theo số activation, `+n` cho cạnh thoát bị ẩn, cạnh đã đi tô màu kèm
+  `outcome ×n`, nút Main path / All paths (nhớ trong `localStorage`, bọc try/catch), SVG `role="group"`, mỗi node `role="button"` có
+  `aria-label` (tên, loại, trạng thái, số lần chạy), Enter/Space chọn node. Accessible List giữ nguyên. Test: `RunGraphCanvas.test.tsx`
+  với fixture dạng P2-02 (vòng lặp 3 lần, gate1 hỏng lần 4), axe. **Chưa có** fixture API ghi lại của 4 run thật (không có trong repo);
+  P1-01, P2-01 (hai run, cần V12-12) và P0-03 sẽ thêm khi có dữ liệu.
 
 ### V12-11 — API: tóm tắt kết quả và lý do dừng
 
@@ -323,6 +391,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
      `message` tiếng Anh.
   3. Cập nhật OpenAPI và sinh lại `web/src/api/generated`. Viết ADR mới vì đổi API công khai. Cập nhật `docs/operator/`.
 - **Test:** Go test cho từng mã `stopReason`, gồm ca command không khởi chạy được.
+- **Kết quả (đã xong, ADR-051):** khảo sát: `AGENT_OUTPUT` là lời cuối của agent; `COMMAND_EXECUTION` là JSON argv/stdout/stderr/exit;
+  attempt `EXECUTION_FAILED` không evidence của P2-02 là lỗi spawn, từ V12-04 có diagnostic `PROCESS_START_FAILED`. Đã làm:
+  `runtime.ResultSummary` + `SummarizeRunActivations` (route graph điền `resultSummary` cho trang activation), `DeriveStopReason` (thuần)
+  vào `RunDiagnostics.stopReason` (HTTP và CLI), `ApprovalRequestView.resolvedBy`. OpenAPI/contract golden và `generated.ts` sinh lại;
+  kiểu tay ở `web/src/api/diagnostics.ts`, `rundetail.ts`. Test: `run_summary_test.go` (mỗi mã một ca, gồm hai ca command không khởi chạy
+  được; ResultSummary theo loại node).
 
 ### V12-12 — Panel lịch sử bên phải
 
@@ -332,6 +406,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Thực hiện:** gộp activation của mọi run theo `nodeKey`. Mỗi dòng lịch sử ghi số run. Mở rộng dòng thì dùng lại nội dung
   `NodeDetailPane`. Nút hành động lấy từ `validActions`.
 - **Test:** component test với fixture P2-01: lịch sử của run 1 (hỏng ở `build`) và run 2 (thành công) cùng hiện ở node `build`.
+- **Kết quả (đã xong):** khảo sát: `getWorkItemProjectedDetail.runs` đã liệt kê mọi run (số thứ tự, version) — không cần API mới. Tab Graph
+  tải graph và timeline (trang đầu) của các run trước, `web/src/graph/runHistory.ts` (`mergeRunHistory`, thuần) gộp theo `nodeKey`: `×n` và
+  cạnh đã đi đếm mọi run, dòng lịch sử ghi số run, giờ, thời lượng, chi phí, outcome, `resultSummary`; run khác version gắn nhãn "older
+  version". `RunHistoryPanel` bên phải: tên, loại, giới hạn vòng, outcome và số lần đi, lịch sử (dòng mới nhất mở sẵn, mở dòng thì là
+  `NodeDetailPane` của activation đó), hành động chỉ từ `validActions` (Retry) và approval đang chờ. Không còn run hoạt động thì sơ đồ vẽ
+  run mới nhất. Test: `RunHistoryPanel.test.tsx` (fixture dạng P2-01, version cũ, axe).
 
 ### V12-13 — Banner, dọn mã cũ, Playwright
 
@@ -339,6 +419,13 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Test:** Playwright trên stack thật (`aw serve` và worker với agent giả lập) cho các hành trình: run có vòng lặp, run hỏng
   giữa chừng, task hai run, node bị chặn rồi retry, cổng duyệt đang chờ. Kiểm tra bàn phím mở được panel của mọi node. Đọc phần
   bài học Playwright của V7-17C trước khi viết.
+- **Kết quả (đã xong một phần):** banner trên sơ đồ: run thứ mấy, trạng thái, `stopReason` (bấm thì mở panel của node đó), thời gian, chi
+  phí. Bỏ cột Timeline, `computeLayout`, `NODE_STYLE`, `STRUCTURAL_KINDS`; panel lịch sử chiếm cột phải, có gợi ý khi chưa chọn node. Test cũ
+  của tab cập nhật (chi phí ở banner và ở dòng lịch sử). Playwright `web/e2e/v12-run-graph.spec.ts` trên stack thật (`aw serve` + worker,
+  fake provider): task hai run (gộp `×2`, Run 1 và Run 2 trong panel), Tab + Enter mở panel của **mọi** node, banner, không còn Timeline;
+  cổng duyệt đang chờ: banner nói, bấm mở panel của cổng, quyết định ở đó. **Chưa có** hành trình Playwright cho run có vòng lặp và node bị
+  chặn rồi retry (cần workflow có COMMAND trên stack e2e; phần này có component test ở V12-10/V12-12). Accessible List giữ lại: sơ đồ mới
+  đạt bàn phím và axe trong test, nhưng chưa thay hợp đồng accessibility của V7 bằng một quyết định của product owner.
 
 ---
 
@@ -357,10 +444,20 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - `parentJoinPolicy` có mặc định;
   - kiểm tra trước khi tạo: đường dẫn được nhắc trong contract mà nằm ngoài `pathScopes` thì cảnh báo; AC thiếu thì báo.
 - **Ghi chú:** API `create-child` đã có. "Soạn contract bằng AI từ một câu mô tả" là phần mở rộng, chỉ làm nếu product owner duyệt.
+- **Kết quả (đã xong, không cần API mới):** nút **New task** trên trang task mở `NewTaskDialog`: mẫu theo loại việc (bug fix, feature,
+  documentation, infrastructure), tiêu đề, behavior, AC, cách kiểm, rủi ro, scope theo repository với thư mục (gợi ý từ Components và
+  `docs`), workflow chọn từ các định nghĩa project đã publish (version mới nhất) kèm "use when" và nhãn "suggested" (chỉ `docs/` → docs-change,
+  bug fix → bugfix, rủi ro MEDIUM+ → plus), cảnh báo khi chọn lệch, `parentJoinPolicy` mặc định `ALL_CHILDREN_DONE`, hoặc dán JSON của
+  `run-task.sh`. Kiểm tra trước khi tạo (`web/src/api/newTask.ts`, thuần): đường dẫn trong contract mà không scope nào phủ (trường hợp P2-01)
+  là cảnh báo; thiếu tiêu đề/behavior/AC/scope/workflow, AC còn placeholder là lỗi chặn. Test: `newTask.test.ts`, `NewTaskDialog.test.tsx`.
+  Không làm phần "soạn contract bằng AI" (chờ product owner duyệt).
 
 ### V12-15 — Sơ đồ workflow trên trang Definitions (UX-44)
 
 - Dùng lại V12-09 và V12-10, không có dữ liệu run, để vẽ sơ đồ workflow trên trang Definitions và trong form tạo task của V12-14.
+- **Kết quả (đã xong):** `web/src/graph/WorkflowDiagram.tsx` dùng `RunGraphCanvas` không có activation (mọi node "not reached"), Main/All
+  paths, bàn phím; chọn node thì liệt kê outcome dẫn tới đâu. Trang Definitions vẽ version WORKFLOW đang chọn (từ `compiledSnapshot`, không
+  được thì `canonicalSource`); form New task vẽ workflow đang chọn. Test: `WorkflowDiagram.test.tsx` (`wf-bugfix` của kit).
 
 ### V12-16 — Hộp "Needs you" và thông báo (UX-28, UX-29)
 
@@ -368,11 +465,22 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   Mỗi việc có hành động một chạm (lấy từ `validActions`), và menu có bộ đếm.
 - Thông báo của trình duyệt khi có việc mới. Kênh ngoài tùy chọn (email, webhook) để người vận hành làm việc từ xa vẫn biết khi
   cần duyệt hoặc run hỏng. Kênh ngoài gửi dữ liệu ra khỏi máy nên cần ADR và chỉ gửi tiêu đề kèm link, không gửi nội dung code.
+- **Kết quả (đã xong trừ kênh ngoài, ADR-052):** `runtime.ListNeedsYou` (`GET /projects/{id}/needs-you`, `aw run needs-you`): approval
+  `PENDING` (kèm outcome và version) và blocker `OPEN` của các task còn mở. Trang **Needs you** trong menu project, bộ đếm đỏ (hỏi lại 15 giây),
+  quyết định approval một chạm, "Open task" cho blocker (Run Again/Retry/Use the new CLI/Resolve ở trang task), thông báo trình duyệt khi
+  có mục mới. Kênh e-mail/webhook **chưa làm** (cần ADR riêng). Test: `quota_resume_test.go` (`ListNeedsYou`), `NeedsYou.test.tsx`; route
+  inventory, security matrix, contract golden, UX doc.
 
 ### V12-17 — Trình xem diff có bình luận (UX-31)
 
 - **Mục tiêu:** ở cổng duyệt, xem diff từng file có tô màu và bình luận theo dòng. Nút "Request changes" gom các bình luận
   thành message gửi kèm outcome `revise`. Bình luận được lưu cùng quyết định để làm evidence.
+- **Kết quả (đã xong, chỉ web):** nút **Review diff** trên dải approval của tab Graph mở `web/src/review/DiffReviewDialog.tsx`:
+  diff chưa commit của mọi repository `READY` của family, từng file, dòng thêm/xóa tô màu, bấm một dòng để bình luận.
+  **Request changes** (outcome `revise`, hoặc `rework` ở `size-review`) gửi bình luận thành message USER của task (`appendMessage`,
+  maker đọc ở attempt sau) và quyết định outcome đó với cùng văn bản làm `reason` (lưu cùng quyết định). Khi còn bình luận thì nút
+  Approve tắt; approve kèm commit vẫn đi qua hộp commit của dải approval. Không đổi API. Logic thuần ở `diffReview.ts`; test
+  `diffReview.test.ts`, `DiffReviewDialog.test.tsx`.
 
 ### V12-18 — Message nhắm node (UX-20)
 
@@ -380,11 +488,22 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   sản phẩm" viết cho `repro` làm `fix` cũng không sửa code, mất 2 vòng.
 - **Mục tiêu:** chọn phạm vi cho message: một node, hoặc chỉ attempt kế tiếp. Giao diện hiện rõ message nào đang có hiệu lực với
   node nào.
+- **Kết quả (đã xong, ADR-053):** message có `targetNodeKey` và `nextAttemptOnly` (migration 0057, HTTP `appendMessage`,
+  `aw message append --node --next-attempt-only`). Scheduler bỏ message nhắm node khác khỏi snapshot; message chỉ-attempt-kế-tiếp
+  vào attempt đầu tiên sau nó rồi thôi (đã giao đọc từ snapshot, `listMessages` trả `delivered`). Chạy lại kèm note giữ đích, bỏ message
+  đã giao. Tab Chat: ô **For** (các node AGENT của run mới nhất) và **only the next attempt**; mỗi message hiện nhãn "for repro",
+  "next attempt only — delivered/waiting". Test: `message_target_sqlite_test.go`, `TaskDetail.test.tsx`.
 
 ### V12-19 — Hàng đợi task (UX-30)
 
 - **Mục tiêu:** xếp nhiều task vào hàng đợi của family. Task kế tự chạy khi task trước đi qua cổng duyệt cuối. Khai báo được
   "chờ task X". Family dùng chung một worktree nên hàng đợi luôn chạy tuần tự.
+- **Kết quả (đã xong, ADR-054):** bảng `work_item_queue_entries` (migration 0058), `SetWorkItemQueue`/`GetFamilyQueue`
+  (`POST`/`GET /work-items/{id}/queue`, `aw work-item queue`, `queue-show`). Worker quét mỗi 10 giây (`AdvanceFamilyQueues`), chạy
+  mục đầu khi task trước `DONE`, family không có run đang chạy và task được chờ `DONE`. Task trước hỏng thì hàng đợi dừng
+  ("paused: …"); không chạy được thì ghi `problem`. Điều kiện là `DONE` thay cho "qua cổng duyệt cuối" để không tranh worktree với
+  commit. Tab Overview có panel Queue (Add to queue, Wait for, Remove from queue). Test: `queue_sqlite_test.go`,
+  `FamilyQueue.test.tsx`; route inventory, security matrix, contract golden, UX doc.
 
 ### V12-20 — Đồng bộ với nhánh gốc và dọn nhánh (UX-24, UX-14)
 
@@ -395,28 +514,56 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - Family hiện trạng thái "đã merge vào <nhánh>".
   - Nút "Close work batch": release workspace set, xóa các nhánh đã merge.
 - **Ràng buộc:** chỉ fetch và cập nhật cục bộ; không push (push thuộc V12-28).
+- **Kết quả (đã xong, ADR-055):** `SyncWorkspaceWithBase` (`POST .../sync-base`, `aw repository-workspace sync-base`): fetch default
+  ref từ `origin`, fast-forward worktree, ghi HEAD qua `AdoptWorkspaceHead` (audit `WorkspaceHeadAdopted`); rẽ nhánh báo `NEEDS_MERGE`,
+  worktree bẩn báo `DIRTY`; HEAD chưa ghi thì từ chối (adopt trước). `GetWorkspaceBaseStatus` (`base-status`): ahead/behind/merged.
+  Tab Workspace có dải "Base branch … merged into main" và nút **Sync with base branch**. Đóng đợt việc là release workspace set:
+  release nay xóa nhánh `agentkit/w-…` khi ref khác đã chứa tip (nhánh còn commit riêng thì giữ). Test: `basesync_test.go`
+  (git thật, có origin), `sync_base_sqlite_test.go`, `BaseBranchStrip.test.tsx`; route inventory, security matrix, contract golden.
 
 ### V12-21 — Publish định nghĩa trên giao diện (UX-04)
 
 - **Mục tiêu:** màn "Project definitions": chọn manifest (`aw-project.json`), chạy `--check`, xem diff version, bấm Publish.
 - **Ràng buộc:** `kit/scripts/aw-publish.py` hiện là lớp ghép ngoài engine. Phải quyết định đưa logic publish vào engine hay để
   giao diện gọi qua API, và cần ADR.
+- **Kết quả (đã xong, ADR-056):** logic publish ở lại trong kit; `aw serve --project-manifest <projectId>=<path>` cho server chạy
+  `aw-publish.py` của kit trên manifest đó (đường dẫn chỉ từ cấu hình lúc khởi động). Route `getDefinitionManifest`,
+  `runDefinitionManifest {mode: CHECK|PUBLISH}`, CLI `aw definition manifest-status`/`manifest-run`. Trang Definitions (Project) có
+  panel Manifest: Check, Publish… (xác nhận), output và mã thoát; diff version dùng API có sẵn. Test: `kitpublish/runner_test.go`
+  (Python thật, script giả), `ManifestPanel.test.tsx`; route inventory, security matrix, parity, contract golden.
 
 ### V12-22 — Tạo task từ `tasks.json` (UX-09)
 
 - Sau cổng DESIGN của `wf-feature-definition`, có nút "Create tasks from tasks.json": xem trước danh sách rồi tạo các WorkItem
   con. Thay cho `split-tasks.sh`.
+- **Kết quả (đã xong, chỉ web):** nút **Tasks from tasks.json** trên trang task mở `CreateTasksDialog`: đọc
+  `docs/features/<slug>/tasks.json` ở revision đã ghi của các repository trong family (hoặc dán vào), báo mục thiếu trường, xem trước
+  (repository, thư mục, số AC, lane, workflow theo rủi ro), tạo task con theo thứ tự với đúng tiêu đề/scope/contract của
+  `split-tasks.sh` (`web/src/api/tasksJson.ts`), mark ready và (tùy chọn) xếp vào hàng đợi của V12-19. Idempotency key theo task nên
+  tạo lại không nhân đôi. Không đổi API. Test: `tasksJson.test.ts`, `CreateTasksDialog.test.tsx`.
 
 ### V12-23 — Chi phí và hạn mức (UX-35, UX-36)
 
 - Màn chi phí: tổng theo task, đợt (WorkItem gốc) và project. Trần ngân sách theo WorkItem gốc, có cảnh báo khi vượt.
 - Hiện hạn mức còn lại và giờ reset của provider nếu provider cung cấp; tạm dừng hàng đợi (V12-19) khi gần hết. Cần xác minh
   Claude CLI có trả số liệu này không.
+- **Kết quả (đã xong, ADR-057):** `GetProjectCosts` (`GET /projects/{id}/costs`, `aw run costs`) và trang **Costs**: token và USD
+  theo task, đợt (WorkItem gốc) và project, từ `USAGE_REPORTED`. Trần ngân sách theo WorkItem gốc (`work_item_budgets`,
+  migration 0059; `POST /work-items/{id}/budget`, `aw work-item budget`), cảnh báo gần/vượt; vượt thì hàng đợi V12-19 không chạy
+  task mới. Hạn mức còn lại **chưa làm**: Claude CLI có in `rate_limit_event` nhưng adapter bỏ nội dung và cấu trúc trường chưa
+  được xác minh với CLI thật (cần bản ghi stream thật); aw chỉ biết khi chạm (V12-03). Khi có `PROVIDER_QUOTA_EXCEEDED` đang mở,
+  mọi hàng đợi dừng và trang Costs hiện giờ chạy tiếp. Test: `costs_sqlite_test.go`, `Costs.test.tsx`; route inventory, security
+  matrix, parity, contract golden.
 
 ### V12-24 — Trang trạng thái project (UX-37)
 
 - Trang Overview của project: tiến độ theo đợt và WorkItem gốc, việc đang chờ, lịch sử gần đây, có xuất báo cáo. Thay cho file
   `STATUS.md` mà người vận hành đang tự giữ.
+- **Kết quả (đã xong, chỉ web):** panel **Status** trên Overview của project (`web/src/screens/ProjectStatus.tsx`): từng đợt (WorkItem
+  gốc và mọi task dưới nó, qua mọi tầng cha) với thanh tiến độ, số task xong/bị chặn/đang chạy, chi phí của đợt (V12-23); danh sách
+  đang chạy; số việc chờ người (V12-16). **Export report** tải `STATUS-<project>-<ngày>.md` cùng nội dung (`api/projectStatus.ts`).
+  Chưa làm: lịch sử có mốc thời gian (thẻ kanban không mang thời điểm; cần một truy vấn sự kiện gần đây). Test:
+  `projectStatus.test.ts`, `ProjectStatus.test.tsx`.
 
 ### V12-25 — Commit message theo quy ước repo (UX-13)
 
@@ -425,10 +572,21 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Mục tiêu:** ô commit message có mẫu mặc định cấu hình theo project (ví dụ Conventional Commits). Marker chuyển xuống trailer
   cuối thân commit. Bỏ hậu tố "(lần N)".
 - **Ràng buộc:** marker cần để truy ngược ReleaseSet, chỉ đổi vị trí, không bỏ.
+- **Kết quả (đã xong, ADR-058):** adapter Git nhận message nhiều dòng (`git commit --cleanup=verbatim -F -`); marker là trailer cuối
+  thân (`commitMessageWithMarker`, nối vào khối trailer có sẵn); mẫu commit message theo project (`project_settings`, migration 0060;
+  `GET`/`POST /projects/{id}/commit-template`, `aw project commit-template`/`set-commit-template`) với `{title}` (bỏ " (lần N)"),
+  `{taskId}`, `{workItemId}`; hộp commit ở cổng duyệt điền sẵn từ mẫu; panel sửa mẫu trên Overview của project. Test:
+  `localcommit_test.go` (message nhiều dòng, git đọc được trailer), `marker_trailer_test.go`, `commit_template_test.go`,
+  `commitTemplate.test.ts`; route inventory, security matrix, parity, contract golden.
 
 ### V12-26 — Xem prompt của node (UX-12)
 
 - Tab "Prompt" trong panel của node, đọc từ ContextSnapshot (giới hạn đã ghi ở V11-11).
+- **Kết quả (đã xong, ADR-059):** `ReadAttemptPrompt` dựng lại prompt từ ContextSnapshot bằng chính hàm render của bước lắp request
+  (`renderAttemptInstruction`, tách khỏi `AssembleAgentExecutionRequest`), che secret, tối đa 512 KiB;
+  `GET /projects/{id}/execution-attempts/{attemptId}/prompt`, `aw node-run prompt [--raw]`. Ngăn chi tiết node AGENT có mục Prompt
+  (Show prompt, chọn attempt, Copy). Test: `attempt_prompt_test.go` (bằng đúng prompt đã lắp, che secret, chặn project khác),
+  `AttemptPrompt.test.tsx`; route inventory, security matrix, parity, contract golden.
 
 ### V12-27 — Cờ CLI bị bỏ qua (UX-41)
 
@@ -436,12 +594,23 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   của Go bỏ qua, và lệnh chỉ in lại usage.
 - **Mục tiêu:** chấp nhận cờ ở mọi vị trí cho mọi lệnh, hoặc usage ghi đúng thứ tự và báo rõ "cờ đặt sau tham số bị bỏ qua".
   Rà mọi lệnh dùng cùng kiểu parse.
+- **Kết quả (đã xong):** `cli.Interspersed` đưa mọi cờ của FlagSet lên trước tham số vị trí (đặt sau `--`); mọi leaf trong
+  `internal/delivery/cli` (27 chỗ `fs.Parse(args)` và doctor/health/settings) parse qua nó, nên cờ đặt ở đâu cũng được đọc. Cờ lạ vẫn
+  báo lỗi; cờ cần giá trị mà thiếu vẫn báo lỗi (không lấy `--` làm giá trị); `--` vẫn kết thúc cờ. Tùy chọn toàn cục của `aw` (đứng
+  trước tên resource) giữ nguyên. Test: `interspersed_test.go`, toàn bộ test CLI. Docs: operator 03.
 
 ---
 
 ## Phần D — Cần ADR hoặc quyết định của product owner trước
 
 Mỗi task ở phần này bắt đầu bằng một ADR. Không viết mã trước khi product owner duyệt ADR.
+
+**Trạng thái (V12-28 … V12-33):** product owner đã duyệt cả sáu ADR ngày 2026-11-03 (có sửa: ADR-060 điều kiện merge, ADR-064
+phạm vi từ xa; xem từng ADR). Mã làm theo thứ tự Task ID. V12-32 (ADR-064) chuyển sang V13 ngày 2026-11-04, không thuộc phạm vi
+V12. ADR:
+ADR-060 (merge/push/PR/CI), ADR-061 (kho secret), ADR-062 (chạy ứng dụng), ADR-063 (QA), ADR-064 (truy cập từ xa),
+ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architecture-decisions.md` mục 62–67. Mỗi ADR có phương án,
+đề xuất và câu hỏi cho product owner.
 
 ### V12-28 — Merge, push, PR và CI từ giao diện (UX-01, UX-39)
 
@@ -450,6 +619,14 @@ Mỗi task ở phần này bắt đầu bằng một ADR. Không viết mã trư
 - **Ràng buộc:** đụng nguyên tắc Alpha "không có executor cho push/PR/merge" (`00-start-here` mục 2.11, ADR về ReleaseSet).
   ADR phải quyết: những thao tác nào được phép, ai được bấm, có xác nhận gì, credentials lấy từ đâu (dùng `gh` hay git
   credential của máy), và audit.
+- **Kết quả (đã xong, ADR-060):** bảng `repository_workspace_remotes` (migration 0061), port `ForgeGit`
+  (`gitworktree`: push không force, `ls-remote`, nhánh hiện tại) và `ForgeClient` (adapter `gh`), app `forgerelease` (GetRemote, Push,
+  CreatePullRequest, Merge) với đủ luật của ADR-060; route `getWorkspaceRemote`, `pushWorkspaceBranch`, `createWorkspacePullRequest`,
+  `mergeWorkspacePullRequest`; CLI `aw repository-workspace remote|push|pull-request|merge`; `aw serve --gh`. Parity gate cho phép đúng
+  các thao tác này (ADR-060 thay ADR-014 cho chúng). Test: `forgegit_test.go` (origin trần thật), `client_test.go` (gh giả),
+  `forge_sqlite_test.go` (luật push/PR/merge trên SQLite thật). Giao diện: dải **GitHub** trong tab Workspace (Push… đặt tên nhánh lần
+  đầu, Open pull request… ready/Draft, trạng thái check, Merge… chọn kiểu merge, ô xác nhận "no CI", lý do chưa merge được); test
+  `RemotePanel.test.tsx`. Docs: operator 00/02/03/06. Chưa chạy với GitHub thật trong môi trường này (gh được thay bằng script giả).
 
 ### V12-29 — Kho secret theo repository (UX-34)
 
@@ -458,11 +635,52 @@ Mỗi task ở phần này bắt đầu bằng một ADR. Không viết mã trư
 - **Mục tiêu:** kho secret theo repository, tiêm vào gate và vào lúc chạy ứng dụng (V12-30), che giá trị khi hiển thị, không bao
   giờ đưa vào prompt của agent.
 - **Ràng buộc:** mã hóa khi lưu, phạm vi truy cập, tương tác với `env-allowlist`.
+- **Kết quả (đã xong, ADR-061):** bảng `repository_secrets` (migration 0062) lưu ciphertext AES-256-GCM (AAD = repository + tên);
+  khóa dữ liệu ngoài DB qua `internal/adapters/secretkey`: DPAPI (Windows), Keychain (macOS, lệnh `security`), Secret Service (Linux,
+  `secret-tool`, giá trị qua stdin) hoặc file `0600`. App `secretstore` (List chỉ tên, Set, Delete, ParseDotEnv, Resolver theo repository
+  rồi tới biến môi trường); COMMAND/gate giải qua bộ giải theo repository (repo cwd trước), giá trị vào bộ che như trước. Route
+  `listRepositorySecrets`, `setRepositorySecrets` (giá trị hoặc `.env`), `deleteRepositorySecret` — hash lệnh chỉ phủ tên; CLI
+  `aw repository secret list|set|delete` (giá trị từ stdin/file, `--env-file`). Giao diện: nút **Secrets** trên từng repository
+  (không bao giờ hiện giá trị; nhập `.env` chỉ hiện tên). Docs: operator 03/05/08. Test: `secretstore_test.go` (SQLite thật, không có
+  giá trị rõ trong DB, giải theo repo, AAD chặn đổi tên, `.env`), `file_test.go`, `secret_scope_internal_test.go`,
+  `RepositorySecretsDialog.test.tsx`; DPAPI (Windows) và Keychain (macOS) chỉ được biên dịch (GOOS=windows/darwin), chưa chạy trên máy
+  thật; product owner chấp nhận cho Keychain macOS chỉ biên dịch (2026-11-04), DPAPI chạy ở bước kiểm trên Windows sau PR. Ghi chú:
+  trên macOS khóa được đưa cho `security` qua argv trong lúc tạo lần đầu (lệnh không đọc mật khẩu từ stdin).
 
 ### V12-30 — Chạy ứng dụng của worktree để QA tay (UX-32)
 
 - Hồ sơ "Run app" theo repository (lệnh, cổng, biến môi trường lấy từ V12-29). Có Start/Stop, log, link mở preview; tự tắt khi
   đóng. Phải dọn tiến trình con để không để lại tiến trình mồ côi giữ cổng (đã gặp với backend và next dev).
+- **Kết quả (đã xong, ADR-062):** migration 0063 (`run_app_profiles`, `run_app_sessions` với chỉ mục duy nhất một phiên đang chạy mỗi
+  repository). App `internal/app/runapp`: hồ sơ (1–8 tiến trình, argv không chuỗi shell, thư mục con không ra ngoài worktree, cổng không
+  trùng, env, tên secret, URL preview http/https, tự tắt 1–1440 phút, mặc định 120), `SetProfile` (CAS theo version), `Start` (từ chối khi
+  chưa có hồ sơ, worktree không READY, có write lease, hay repository đã có phiên), `Stop`, `GetStatus` (log tail, lý do chưa Start được).
+  `Runner` chạy trong `aw worker` (vòng 2 giây): nhận phiên REQUESTED, kiểm cổng trống, giải secret theo repository, chạy từng tiến trình
+  qua supervisor (process group / Job Object), log từng tiến trình có che secret theo dòng (`internal/adapters/runapphost`, 8 MiB);
+  dừng và giết cả cây khi Stop, tới hạn, worktree hết READY, có write lease, một tiến trình thoát, worker dừng; sau khi worker khởi động
+  lại thì đóng phiên cũ FAILED. Route `getRunAppProfile`, `setRunAppProfile`, `getRunAppStatus`, `startRunApp`, `stopRunApp`; CLI
+  `aw repository run-app show|set`, `aw repository-workspace run-app status|start|stop`; giao diện: dải **Run app** trong tab Workspace
+  (Start/Stop, trạng thái, lý do, log, Open preview, trình sửa hồ sơ JSON có mẫu). Docs: operator 03/05/09. Test:
+  `runapp_sqlite_test.go` (SQLite thật, worktree thật, supervisor thật: chạy hai tiến trình trong thư mục con, secret bị che trong log,
+  Stop giết tiến trình; cổng bận, tiến trình tự thoát, secret thiếu → FAILED; write lease và project khác bị từ chối),
+  `RunAppPanel.test.tsx`.
+- **Bổ sung trước PR (product owner, 2026-11-04):**
+  - Cổng bận thì báo tiến trình đang giữ cổng (tên và PID), chỉ báo, không giết: Linux đọc `/proc/net/tcp(6)` rồi tìm inode của socket
+    trong `/proc/<pid>/fd`; macOS hỏi `lsof -iTCP:<port> -sTCP:LISTEN`; Windows gọi `GetExtendedTcpTable` (IPv4 và IPv6) rồi
+    `QueryFullProcessImageName`. Ví dụ: `port 8080 (backend) is in use: java (pid 4120) holds it`. Tiến trình của user khác không đọc
+    được thì vẫn báo "another program".
+  - Tiến trình mồ côi khi worker bị giết đột ngột: mỗi phiên ghi PID và thời điểm khởi động của worker (`aw.worker.pid`) và của từng tiến
+    trình (`<process>.pid`) trong `<artifact-root>/run-app/<session>/`. Mỗi vòng, worker thấy một phiên đang chạy mà worker ghi trong đó
+    không còn (PID không còn, hoặc PID đã bị dùng lại vì thời điểm khởi động khác) thì giết cả nhóm tiến trình đã ghi (SIGTERM rồi SIGKILL
+    sau 3 giây; chỉ khi PID và thời điểm khởi động còn khớp, nên không giết nhầm tiến trình khác) và đóng phiên FAILED, nêu tên các tiến
+    trình đã dọn; worker khởi động lại với cùng `--worker-id` cũng làm vậy với phiên của chính nó. Trên Linux tiến trình con có
+    `PR_SET_PDEATHSIG=SIGKILL` (chỉ cho Run app, không cho agent/command): chết theo worker ngay cả khi worker bị `kill -9`; tín hiệu này chỉ
+    tới tiến trình con trực tiếp, cháu (ví dụ `java` dưới `mvnw`) do bước dọn ở trên xử lý. macOS không có PDEATHSIG nên chỉ có bước dọn.
+    Windows: Job Object của supervisor (`KILL_ON_JOB_CLOSE`) đã giết cả cây khi worker chết; bước dọn chỉ còn `TerminateProcess` tiến trình
+    đã ghi.
+  - Test: `runapp_sqlite_test.go` (cổng bận nêu PID của tiến trình đang giữ; worker chết để lại `sleep` trong nhóm riêng, worker mới dọn và
+    đóng phiên FAILED), `pdeathsig_linux_test.go`. Windows (`GetExtendedTcpTable`, `GetProcessTimes`, `TerminateProcess`) chỉ được biên
+    dịch; macOS (`lsof`, `ps`) chỉ được biên dịch. Chưa chạy trên Windows thật.
 
 ### V12-31 — QA trong aw (UX-33, UX-43)
 
@@ -470,22 +688,104 @@ Mỗi task ở phần này bắt đầu bằng một ADR. Không viết mã trư
   qua form của V12-14).
 - Biến thể bugfix cho UI chưa có bộ test: tái hiện bằng script trình duyệt (Playwright), hoặc dùng checklist QA có ảnh trước và
   sau làm evidence ở cổng người.
+- **Kết quả (đã xong, ADR-063):** `ApprovalNodeConfig.checklist` (`fromAcceptanceCriteria`, `items`, `passedOutcome`, `failedOutcome`;
+  kiểm khi publish: hai outcome khác nhau và có khai báo, có mục, tối đa 50, không trùng). `ResolveApproval` nhận `checklist`: đủ mọi mục,
+  PASSED/FAILED, mục FAILED phải có ghi chú, outcome phải đúng theo các mục (sai thì 422, cổng vẫn chờ); approval thường từ chối checklist.
+  Kết quả lưu ở bảng `approval_checklists` (migration 0064) — bản ghi QA_CHECKLIST của cổng (bảng `evidence` gắn với attempt nên không
+  dùng được cho cổng người); `getRunDetail`/`getNodeRunDetail` trả `approvalRequests[].checklist` (mục đang chờ, hoặc mục đã chốt). CLI
+  `aw approval resolve --checklist`; `review-task.sh` nhận `CHECKLIST=`. Giao diện: nút **QA checklist…** (đạt/không đạt, ghi chú, đính ảnh
+  qua attachment của task, outcome tự suy ra, rồi tới bước commit nếu node bật release), **Create fix task** mở New task điền sẵn (bugfix,
+  tiêu đề, behavior, tiêu chí); khung node hiện checklist đã chốt. Kit 1.10.0: `wf-qa`, `wf-bugfix-ui` (agent `agent-flow-repro-ui`, skill
+  `bugfix.repro-ui`, lệnh `cmd-ui-expect-fail`/`cmd-ui-verify` qua `ui-check.sh`: script `.aw-qa/*.mjs` ngoài repo mặc định, bật
+  `AW_QA_SCRIPTS_IN_REPO=1` để đưa vào repo, ảnh và SHA-256 trong output). Test: `approval_checklist_test.go` (SQLite thật),
+  `checklist_config_test.go`, `QAChecklistDialog.test.tsx`, walk `qa-passed`, `qa-failed`, `bugfix-ui-happy`. Bổ sung trước PR
+  (2026-11-04): **Create fix task** điền sẵn scope từ task đang QA: `getWorkItem` trả thêm `effectiveScope` (repository, quyền, path),
+  form New task nhận các scope WRITE của task đó (test: `commands_sqlite_test.go`, `QAChecklistDialog.test.tsx`). Việc để sau (product
+  owner đồng ý): ảnh trước/sau chưa tự gắn vào checklist (người duyệt mở từ worktree); task QA gốc (không có effective scope riêng) thì
+  form để trống scope. `ui-check.sh` đã chạy với Playwright
+  và Chromium thật trên Linux (lỗi tái hiện được, sau khi sửa thì đạt, script không chạm lỗi thì bị từ chối, không có ứng dụng thì báo
+  ENVIRONMENT); chưa chạy trên Windows.
 
 ### V12-32 — Truy cập từ xa và màn duyệt cho điện thoại (UX-40)
 
-- Giao diện hiện chỉ mở được trên máy chạy aw. Cần thiết kế bảo mật riêng (tunnel có xác thực, phạm vi thao tác cho phép từ xa)
-  trước khi làm màn duyệt gọn cho điện thoại.
+- **Chuyển sang V13 (product owner, 2026-11-04): task phức tạp, đụng ranh giới tin cậy của ADR-016.** Không làm trong V12, không tính
+  vào gate V12. Nội dung và quyết định đã duyệt của ADR-064 chuyển thành V13-01 … V13-04 trong `docs/design/16-v13-remote-access.md`.
+- Nội dung gốc: giao diện hiện chỉ mở được trên máy chạy aw. Cần thiết kế bảo mật riêng (tunnel có xác thực, phạm vi thao tác cho
+  phép từ xa) trước khi làm màn duyệt gọn cho điện thoại.
 
 ### V12-33 — Nơi lưu tài liệu trung gian của kit (UX-45)
 
 - Các node của kit ghi `frame.md`, `plan.md` vào `docs/features/<feature>/tasks/<task>/` của repo sản phẩm, mỗi task thêm một
   thư mục. Product owner quyết định có cho chọn lưu chỉ trong artifact của aw (xem được trên giao diện) hay không; đây là thiết
   kế của V10.
+- **Kết quả (đã xong, ADR-065):** cài đặt theo project `task_documents` (REPO mặc định, AW), route `getProjectTaskDocuments` /
+  `setProjectTaskDocuments`, CLI `aw project task-documents|set-task-documents`, khung **Task documents** trên trang project;
+  `aw-project.json` có `taskDocuments` (`aw-publish.py` đặt). Với AW, tài liệu của task nằm ở `.aw/features/<feature>/tasks/<task>/`
+  trong worktree: `gitworktree` ghi `/.aw/` vào `info/exclude` khi tạo worktree (và lần đầu một tiến trình chạy trong worktree cũ),
+  nên git bỏ qua, không commit, không tính vi phạm scope. `split-tasks.sh` và *Create tasks* ghi thư mục đó vào contract của task;
+  skill `flow.working-rules`, `flow.frame`, `flow.plan` đọc thư mục của task từ contract (kit 1.11.0); `check-plan.sh` kiểm plan mới nhất
+  trong `.aw/` và in nội dung vào output (aw giữ cùng evidence của bước). Route `listAwDocuments` / `exportAwDocuments`, CLI
+  `aw repository-workspace aw-documents list|export`; tab Workspace có **Task documents in aw** (xem từng file, **Export to repo** chép
+  sang `docs/features/…` chưa commit, trùng khác nội dung thì dừng cả lần chép cho tới khi chọn **Overwrite**; cần READY, không có write
+  lease). `02-spec.md`, `03-design.md`, `tasks.json` vẫn luôn ở repo. Docs: operator 03/04, kit README. Test: `awdocuments_sqlite_test.go`
+  (SQLite và worktree thật: git bỏ qua `.aw/`, xuất, trùng, ghi đè, replay, write lease), `task_documents_sqlite_test.go`,
+  `AwDocumentsPanel.test.tsx`, `check-plan.sh` chạy tay với plan trong `.aw/`.
+- **Bổ sung trước PR (product owner, 2026-11-04): không mất tài liệu khi release worktree.** aw chụp mỗi file `.aw/features/…` vào một
+  artifact ATTACHED (CANONICAL_CONTEXT: không hết hạn, không bị dọn; giá trị secret đã biết được che) khi một attempt AGENT chạy trong
+  worktree thành công, và lần nữa trong job release ngay trước khi worktree bị xóa (lỗi ở bước này thì job release thử lại, không xóa
+  worktree). Bảng `aw_document_snapshots` (migration 0065) giữ bản mới nhất theo (family, repository, đường dẫn); file không đổi thì không
+  chụp lại. Tab Workspace và `listAwDocuments` gộp file trong worktree với bản chụp của file đã mất (nhãn "aw's copy"); worktree đã release
+  thì chỉ còn bản chụp. Export to repo lấy nội dung từ worktree, hoặc từ bản chụp khi file trong worktree không còn. ADR-065 đã viết lại
+  theo thiết kế thật. Test: `awdocuments_sqlite_test.go` (chụp, không chụp lại file không đổi, đọc và xuất từ bản chụp khi file đã xóa,
+  secret bị che), `handler_sqlite_test.go` của workspacerelease (hook chạy khi worktree còn), `AwDocumentsPanel.test.tsx` (worktree đã
+  release).
 
 ---
 
+## Kiểm chứng trên Windows thật (2026-11-04)
+
+Chạy trên máy Windows 10 của product owner: build commit `05b4d25` vào một bản cài riêng (không đụng bản aw đang quản lý
+chochuyennha), (a) `aw serve` trên **bản sao** dữ liệu thật để xem run cũ, (b) `aw up` với dữ liệu mới và một clone riêng của
+chochuyennha-platform (Spring Boot + Next.js) để chạy thật.
+
+**Đạt:**
+- Run graph trên 4 run thật (P2-02, P1-01, P2-01, P0-03): hình dạng, làn quay lại, All paths, bộ đếm số lần chạy thật (P2-02:
+  `gate1 ×4`, `size ×3`, `simplify ×3`; P1-01: `repro ×6` gộp 2 run kể cả lần bị chặn rồi retry), `resultSummary` (`size`: "571 →
+  525 → 522 changed lines, 10 files (threshold 8)").
+- `aw up` (V12-08); kho secret (V12-29): `protection: dpapi`, khóa ở `secret-store.key.dpapi`, mật khẩu không xuất hiện dạng rõ trong
+  bất kỳ file nào (DB, WAL, artifact).
+- Run app (V12-30): backend kết nối RDS bằng secret của kho, log che secret; cổng bận báo `python.exe (pid 21320) holds it`; Stop giết
+  cả cây (mvnw, java, npm, node); `taskkill /F` worker → Job Object giết cả cây, chạy lại worker thì phiên đóng `FAILED: worker
+  aw-worker-… stopped while the application ran`.
+- `ui-check.sh` (V12-31) với Playwright và Chromium thật: expect-fail và expect-pass đúng, script lỗi và script báo lỗi đều bị chặn.
+
+**Lỗi tìm thấy và đã sửa (cùng commit với khối này):**
+- CI `contract (windows-latest)` dừng ở `go vet`: `runapp_sqlite_test.go` dùng `syscall.SysProcAttr{Setpgid}` không có trên Windows →
+  helper theo build tag (`procgroup_unix_test.go`, `procgroup_windows_test.go`). Vì lỗi này, `go test ./...` chưa từng chạy trên
+  Windows CI cho V12.
+- `go test ./...` trên Windows: `TestOpen_ConcurrentOpensOfAFreshDatabaseMigrateOnce` (V12-08) hỏng 17/20 lần (`SQLITE_BUSY` khi
+  chuyển một DB mới sang WAL, SQLite trả BUSY ngay, không qua busy handler) → `busy_timeout` đứng trước `journal_mode(WAL)`, và
+  `Open` thử lại lần ping đầu khi gặp `SQLITE_BUSY` trong giới hạn 10 giây (30/30 lần đạt).
+- `kitpublish`: `python3` trên Windows thường là alias của Microsoft Store (thoát 9009) → mặc định `python` trên Windows
+  (`kitpublish.DefaultPython`, `--python` rỗng, `AW_PYTHON`); test tìm interpreter chạy được thật.
+- `costs.go` thừa dòng trống cuối file (V8-11 `git diff --check`).
+- Run app không chạy được script trong repo trên Windows (`./mvnw.cmd` → cmd.exe báo "'.' is not recognized"; `mvnw.cmd` không có
+  trong PATH) → `argv[0]` dạng đường dẫn tương đối được giải theo `dir` của tiến trình (`resolveExecutable`); tài liệu có ví dụ Windows.
+- Thời lượng mỗi lần chạy luôn "0 ms": `loadExecutionAttemptByID` không đọc `started_at`/`finished_at`, và `started_at` không được
+  ghi cho mọi attempt → loader đọc `started_at`, `finished_at` và `created_at` (trường mới `ExecutionAttempt.CreatedAt`); timeline
+  dùng `created_at` làm giờ bắt đầu khi `started_at` trống. `StartedAt` giữ nghĩa cũ (nil = chưa từng spawn executor, test
+  `TestRuntimeEngineGate_AdapterBuildPinning` dựa vào nó). Giao diện hiện "—" khi không có số liệu.
+- Thời gian trên banner sai cho run thành công (P0-03 hiện "3659m"): `TransitionWorkflowRunState` không ghi `finished_at` khi
+  chuyển sang `SUCCEEDED` → ghi như FAILED/CANCELLED. Run thành công cũ vẫn thiếu `finished_at`; banner lấy giờ kết thúc của
+  attempt cuối thay thế.
+
+**Còn lại:** log của tiến trình chạy qua `npm.cmd` có dòng "Terminate batch job (Y/N)?" khi Stop (chỉ là chữ, cây tiến trình vẫn bị
+giết); V12-28 với một repo GitHub thật chưa chạy.
+
 ## Ngoài phạm vi V12
 
+- V12-32, truy cập từ xa và màn duyệt cho điện thoại: chuyển sang V13 (`16-v13-remote-access.md`), product owner quyết định
+  2026-11-04.
 - Chọn effort hoặc ngân sách riêng cho từng node (product owner đã từ chối, 2026-10-04).
 - Gọi model phân loại bên ngoài ở các gate (đã đánh giá TypeSafe Jev ngày 2026-11-03; product owner không chọn vì giá trị chưa
   nổi bật trong khi có rủi ro đưa dữ liệu ra ngoài).
@@ -498,4 +798,4 @@ Mỗi task ở phần này bắt đầu bằng một ADR. Không viết mã trư
   chochuyennha (P2-02, P1-01, P2-01, P0-03) trên giao diện mới và xác nhận: thấy đúng vòng lặp và số lần chạy, đọc được lý do
   dừng của P2-02, mở được lịch sử mọi node bằng chuột và bàn phím.
 - Phần C: chạy trọn một task chochuyennha từ tạo task tới commit và đồng bộ nhánh mà không mở terminal.
-- Phần D: chỉ các task có ADR đã được duyệt mới tính vào gate.
+- Phần D: chỉ các task có ADR đã được duyệt mới tính vào gate. V12-32 không tính (đã chuyển sang V13).

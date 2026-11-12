@@ -87,6 +87,16 @@ const (
 	// failure visible on the WorkItem. RESOLVED only (never waived): the exits are requesting a
 	// new commit from the current change set and then resolving this blocker, or CancelWorkItem.
 	BlockerReleaseFailed BlockerType = "RELEASE_FAILED"
+	// BlockerProviderQuotaExceeded (V12-03, ADR-046): an AGENT attempt stopped because the provider account hit a usage limit.
+	// The run stays alive with the NodeRun BLOCKED; RetryBlockedActivation (automatically at the provider's reset time, or by the
+	// operator) resolves it with a new activation of the same node. Never waived.
+	BlockerProviderQuotaExceeded BlockerType = "PROVIDER_QUOTA_EXCEEDED"
+	// BlockerAdapterProbeFailed (V12-04, ADR-047): admission blocker group — the pinned provider CLI could not be probed (not a
+	// drift). Retried as is by RetryBlockedActivation.
+	BlockerAdapterProbeFailed BlockerType = "ADAPTER_PROBE_FAILED"
+	// BlockerProviderLoginRequired (V12-04, ADR-047): an AGENT attempt stopped because the provider CLI is not signed in. The
+	// operator signs in again, then retries the node (RetryBlockedActivation). Never waived.
+	BlockerProviderLoginRequired BlockerType = "PROVIDER_LOGIN_REQUIRED"
 )
 
 var knownBlockerTypes = map[BlockerType]struct{}{
@@ -99,6 +109,9 @@ var knownBlockerTypes = map[BlockerType]struct{}{
 	BlockerCapabilityRequirementUnsatisfied: {},
 	BlockerWriteCapabilityOrGrantMissing:    {},
 	BlockerReleaseFailed:                    {},
+	BlockerProviderQuotaExceeded:            {},
+	BlockerAdapterProbeFailed:               {},
+	BlockerProviderLoginRequired:            {},
 }
 
 // IsValid reports whether t is a member of the closed BlockerType set.

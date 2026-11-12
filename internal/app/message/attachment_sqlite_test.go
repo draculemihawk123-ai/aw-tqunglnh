@@ -2,13 +2,13 @@ package message_test
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -33,7 +33,7 @@ import (
 func setupSQLiteAttachmentFixture(t *testing.T, dbName string) (ports.UnitOfWork, ports.ArtifactStore, string) {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), dbName))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, dbName))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/approvalrelease"
@@ -38,11 +39,13 @@ type resolveApprovalHashPayload struct {
 	Reason            string `json:"reason,omitempty"`
 	// Commit mirrors the HTTP handler's hash payload (V11-07).
 	Commit *commitSpec `json:"commit,omitempty"`
+	// Checklist mirrors it too (V12-31).
+	Checklist []runtime.ChecklistItemResult `json:"checklist,omitempty"`
 }
 
 type resolveApprovalFlags struct {
-	principal, idempotencyKey, outcome, reason, commitSpec *string
-	expectedVersion                                        *uint64
+	principal, idempotencyKey, outcome, reason, commitSpec, checklist *string
+	expectedVersion                                                   *uint64
 }
 
 // bindResolveApprovalFlags is ResolveApproval's own flag-binding step,
@@ -61,6 +64,7 @@ func bindResolveApprovalFlags(fs *flag.FlagSet) resolveApprovalFlags {
 		outcome:         fs.String("outcome", "", "the exact declared outcome this operator's decision maps to (required; an open, per-node vocabulary — validated against the node's own allow-list inside advanceRunTx, never a closed enum here)"),
 		reason:          fs.String("reason", "", "optional human-readable reason for this decision"),
 		commitSpec:      fs.String("commit-spec", "", "V11-07: also commit the worktree's changes — JSON like the HTTP body's \"commit\" object, or @path to read it from a file (allowed only where the approval node's release policy offers it)"),
+		checklist:       fs.String("checklist", "", "V12-31: a QA checklist approval's results — a JSON list of {\"id\",\"result\":\"PASSED|FAILED\",\"note\"}, or @path to read it from a file (required for a checklist approval)"),
 	}
 }
 
@@ -124,7 +128,11 @@ func ResolveApproval(ctx context.Context, deps Dependencies, args []string, stdo
 	if err != nil {
 		return err
 	}
-	hashPayload, err := json.Marshal(resolveApprovalHashPayload{ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason, Commit: spec})
+	checklist, err := parseChecklist(*f.checklist)
+	if err != nil {
+		return err
+	}
+	hashPayload, err := json.Marshal(resolveApprovalHashPayload{ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason, Commit: spec, Checklist: checklist})
 	if err != nil {
 		return err
 	}
@@ -151,7 +159,7 @@ func ResolveApproval(ctx context.Context, deps Dependencies, args []string, stdo
 			commit = prepared
 		}
 		return runtime.ResolveApproval(ctx, deps.UOW, deps.IDs, envelope.Command, runtime.ResolveApprovalRequest{
-			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason, Commit: commit,
+			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason, Commit: commit, Checklist: checklist,
 		})
 	})
 	if err != nil {
@@ -160,4 +168,30 @@ func ResolveApproval(ctx context.Context, deps Dependencies, args []string, stdo
 	return cli.EncodeCommandResult(stdout, cli.ResultEnvelope{
 		IdempotencyKey: envelope.Command.IdempotencyKey, Replayed: dispatched.Replayed, Result: dispatched.Result,
 	})
+}
+
+// parseChecklist reads --checklist: a JSON list of item results, or @path.
+func parseChecklist(value string) ([]runtime.ChecklistItemResult, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	raw := []byte(value)
+	if strings.HasPrefix(value, "@") {
+		data, err := os.ReadFile(strings.TrimPrefix(value, "@"))
+		if err != nil {
+			return nil, usageErrorf("--checklist: %v", err)
+		}
+		raw = data
+	}
+	if len(raw) > 1<<20 {
+		return nil, usageErrorf("--checklist is larger than 1 MiB")
+	}
+	var out []runtime.ChecklistItemResult
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&out); err != nil {
+		return nil, usageErrorf("--checklist is not a JSON list of item results: %v", err)
+	}
+	return out, nil
 }

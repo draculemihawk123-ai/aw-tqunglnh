@@ -242,6 +242,7 @@ var routePreconditions = map[string]routePrecondition{
 	"requestWorkspaceSetRelease":     {Headers: map[string]string{httpapi.IfMatchHeader: httpapi.ETagFromVersion(1)}},
 	"requestWorkspaceReconciliation": {Headers: map[string]string{httpapi.IfMatchHeader: httpapi.ETagFromVersion(1)}},
 	"adoptWorkspaceHead":             {Headers: map[string]string{httpapi.IfMatchHeader: httpapi.ETagFromVersion(1)}},
+	"syncWorkspaceWithBase":          {Headers: map[string]string{httpapi.IfMatchHeader: httpapi.ETagFromVersion(1)}},
 	// V6-10D: the three bounded inspection routes require the full
 	// WorkspaceScope quadruple plus a revision/anchor, as query parameters
 	// (workspaceinspection/params.go's own requireQueryParam discipline).

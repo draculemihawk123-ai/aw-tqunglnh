@@ -337,6 +337,9 @@ type WorkRepository interface {
 	// ResolveWorkItemBlocker's own "how many OPEN blockers remain" count and
 	// CancelWorkItem's own audit trail both read the full, unfiltered set.
 	ListWorkItemBlockersForWorkItem(ctx context.Context, workItemID string) ([]work.WorkItemBlocker, error)
+	// ListOpenBlockersOfType (V12-04) returns every OPEN blocker of blockerType in the installation, oldest first, at most
+	// limit rows. `aw doctor` uses it to say that an attempt found the provider CLI signed out.
+	ListOpenBlockersOfType(ctx context.Context, blockerType work.BlockerType, limit int) ([]work.WorkItemBlocker, error)
 	// RecordWorkItemSupersession (V11-10, ADR-041) stores that supersession.NewWorkItemID replaced
 	// supersession.OldWorkItemID. Idempotent by NewWorkItemID: the identical pair returns the stored row; a
 	// different old WorkItem for the same new one, or an old WorkItem already replaced by another, is
@@ -436,6 +439,11 @@ type WorkRepository interface {
 	// FAILED for another reason) are NOT counted, so a genuine duplicate
 	// still collides (ErrLocalCommitMarkerCollision).
 	CountNoChangesFailedReleaseSetLocalCommits(ctx context.Context, releaseSetID, repositoryWorkspaceID, actor, messageHash string) (int, error)
+	// ListLocalCommitsWithDeadJob (V12-01) returns every operation still REQUESTED whose
+	// RELEASE_SET_LOCAL_COMMIT job is DEAD — the job exhausted its claims (each lease expired
+	// without the job completing) and nothing will ever run it again. The caller closes each one
+	// FAILED/EXECUTION_ERROR so the operation does not stay REQUESTED for ever.
+	ListLocalCommitsWithDeadJob(ctx context.Context) ([]DeadLocalCommitJob, error)
 	// PinReleaseSetLocalCommitParent durably records the exact parent
 	// commit a worker resolved (via a real, outside-transaction Inspect
 	// call) immediately BEFORE ever calling LocalCommitCreator — so a
@@ -515,13 +523,24 @@ type TransitionReleaseSetLocalCommitToCommittedRequest struct {
 	OccurredAt              time.Time
 }
 
+// DeadLocalCommitJob is one row of WorkRepository.ListLocalCommitsWithDeadJob.
+type DeadLocalCommitJob struct {
+	Intent        work.ReleaseSetLocalCommit
+	JobID         JobID
+	ClaimCount    uint32
+	LastErrorCode string
+}
+
 // TransitionReleaseSetLocalCommitToFailedRequest is what a caller supplies
 // to WorkRepository.TransitionReleaseSetLocalCommitToFailed.
 type TransitionReleaseSetLocalCommitToFailedRequest struct {
 	ReleaseSetLocalCommitID string
 	ExpectedVersion         uint64
 	FailureReason           work.ReleaseSetLocalCommitFailureReason
-	OccurredAt              time.Time
+	// FailureDetail (V12-01) is stored with the failure (already redacted by the caller); may be
+	// empty.
+	FailureDetail string
+	OccurredAt    time.Time
 }
 
 // RepositoryWorkspaceRecord pairs a RepositoryWorkspace with the FamilyID

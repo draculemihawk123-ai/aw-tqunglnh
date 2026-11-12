@@ -66,6 +66,11 @@ type messageRefDTO struct {
 	// DisplayOnly and NodeRunID (V11-11): an activity message the engine wrote for people, and the node run it is about.
 	DisplayOnly bool   `json:"displayOnly,omitempty"`
 	NodeRunID   string `json:"nodeRunId,omitempty"`
+	// TargetNodeKey and NextAttemptOnly (V12-18): who the message is for. Delivered says, for a next-attempt-only message, whether
+	// an attempt already got it (then no later attempt does).
+	TargetNodeKey   string `json:"targetNodeKey,omitempty"`
+	NextAttemptOnly bool   `json:"nextAttemptOnly,omitempty"`
+	Delivered       bool   `json:"delivered,omitempty"`
 }
 
 func messageToRefDTO(m messagedomain.Message) messageRefDTO {
@@ -74,6 +79,7 @@ func messageToRefDTO(m messagedomain.Message) messageRefDTO {
 		Sequence: m.Sequence, Actor: m.Actor, Role: string(m.Role),
 		ContentArtifactID: string(m.ContentArtifactID), CorrelationID: m.CorrelationID, CreatedAt: m.CreatedAt,
 		Pinned: m.Pinned, DisplayOnly: m.DisplayOnly, NodeRunID: m.NodeRunID,
+		TargetNodeKey: m.TargetNodeKey, NextAttemptOnly: m.NextAttemptOnly,
 	}
 	if m.AttemptID != nil {
 		dto.AttemptID = string(*m.AttemptID)

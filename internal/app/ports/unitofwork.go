@@ -97,6 +97,20 @@ type Tx interface {
 	// ContextSnapshotRepository's own doc comment,
 	// internal/app/ports/contextsnapshot.go).
 	ContextSnapshots() ContextSnapshotRepository
+	// Queue (V12-19, ADR-054) is the family task queues.
+	Queue() QueueRepository
+	// Budgets (V12-23, ADR-057) is the spending caps of root work items.
+	Budgets() BudgetRepository
+	// ProjectSettings (V12-25, ADR-058) is per-project operator settings (the commit message template).
+	ProjectSettings() ProjectSettingsRepository
+	// Forge (V12-28, ADR-060) is the remote branches and pull requests aw created.
+	Forge() ForgeRepository
+	// Secrets (V12-29, ADR-061) is the repository secret store (ciphertext only).
+	Secrets() SecretsRepository
+	// RunApp (V12-30, ADR-062) is run-app profiles and sessions.
+	RunApp() RunAppRepository
+	// AwDocuments (V12-33, ADR-065) is aw's copies of the per-task documents kept in a worktree's .aw/.
+	AwDocuments() AwDocumentSnapshotRepository
 	// AgentEvents is populated now (V5-08A, docs/design/07-v5-execution-evidence.md):
 	// the production, registry-normalized agent_events contract (see
 	// AgentEventsRepository's own doc comment, internal/app/ports/agentevent.go).

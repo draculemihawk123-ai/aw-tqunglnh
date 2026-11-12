@@ -1,5 +1,5 @@
 {
-  "name": "wf-task-delivery-plus: diff vẫn lớn sau 2 lần làm gọn → reject",
+  "name": "wf-task-delivery-plus: diff vẫn lớn sau 3 lần làm gọn → cổng người size-review → rejected",
   "manifest": "../aw-project.json",
   "workflow": "wf-task-delivery-plus",
   "agents": {
@@ -35,6 +35,9 @@
   "approvals": {
     "gate2": [
       "approved"
+    ],
+    "size-review": [
+      "rejected"
     ]
   },
   "expect": {
@@ -58,6 +61,7 @@
       "gate1:passed",
       "size:large",
       "simplify:escalated",
+      "size-review:rejected",
       "reject:-"
     ]
   }

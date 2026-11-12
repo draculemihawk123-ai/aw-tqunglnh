@@ -3,12 +3,12 @@ package runtime_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -29,7 +29,7 @@ import (
 func sqliteExecutionFixture(t *testing.T) (uow ports.UnitOfWork, store *sqlite.Store, ids idsource.Source, runID, nodeRunID, attemptID string) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "agentkit-finalize-execution-attempt.db")
+	dbPath := sqlitetest.MigratedPath(t, "agentkit-finalize-execution-attempt.db")
 	s, err := sqlite.Open(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)

@@ -51,8 +51,8 @@
       "size:passed",
       "quality:passed",
       "review:approved",
-      "gate2:approved",
       "sync:done",
+      "gate2:approved",
       "end:-"
     ],
     "prompts": [

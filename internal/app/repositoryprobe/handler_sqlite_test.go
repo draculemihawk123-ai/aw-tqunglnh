@@ -11,6 +11,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -53,7 +54,7 @@ func runFixtureGit(t *testing.T, directory string, arguments ...string) {
 
 func openProbeTestStore(t *testing.T, name string) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, name))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

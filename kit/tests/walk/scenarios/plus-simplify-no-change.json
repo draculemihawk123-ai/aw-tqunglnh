@@ -1,0 +1,63 @@
+{
+  "name": "wf-task-delivery-plus: simplify không gọn được gì → cổng người ngay (không đốt thêm lượt)",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ],
+    "simplify": [
+      "no_change"
+    ]
+  },
+  "commands": {
+    "size": [
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ],
+    "size-review": [
+      "accept"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "check-plan:passed",
+      "build:done",
+      "hygiene:passed",
+      "gate1:passed",
+      "size:large",
+      "simplify:no_change",
+      "size-review:accept",
+      "quality:passed",
+      "review:approved",
+      "sync:done",
+      "gate2:approved",
+      "end:-"
+    ]
+  }
+}

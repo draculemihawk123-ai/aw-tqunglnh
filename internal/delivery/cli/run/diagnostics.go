@@ -18,6 +18,51 @@ func init() {
 		Path: []string{"run", "diagnostics"}, Scope: cli.ScopeProject,
 		AppOperation: "GetRunDiagnostics", HTTPOperationID: "getRunDiagnostics",
 	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"run", "needs-you"}, Scope: cli.ScopeProject,
+		AppOperation: "ListNeedsYou", HTTPOperationID: "listNeedsYou",
+	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"run", "costs"}, Scope: cli.ScopeProject,
+		AppOperation: "GetProjectCosts", HTTPOperationID: "getProjectCosts",
+	})
+}
+
+// Costs implements `aw run costs --project-id <id>` (V12-23): spend by task and batch, budgets, provider limits hit now.
+func Costs(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("run costs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	projectID := cli.BindProjectFlag(fs)
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*projectID) == "" {
+		return errors.New("cli: run costs: --project-id is required")
+	}
+	costs, err := runtime.GetProjectCosts(ctx, deps.UOW, deps.Matcher, *projectID)
+	if err != nil {
+		return err
+	}
+	return cli.EncodeQueryResult(stdout, costs)
+}
+
+// NeedsYou implements `aw run needs-you --project-id <id>` (V12-16): every approval waiting for a decision and every open blocker of
+// the project's tasks.
+func NeedsYou(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("run needs-you", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	projectID := cli.BindProjectFlag(fs)
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*projectID) == "" {
+		return errors.New("cli: run needs-you: --project-id is required")
+	}
+	list, err := runtime.ListNeedsYou(ctx, deps.UOW, deps.Matcher, *projectID)
+	if err != nil {
+		return err
+	}
+	return cli.EncodeQueryResult(stdout, list)
 }
 
 // The DTOs below are hand-mapped, field-by-field, from
@@ -135,6 +180,8 @@ type DiagnosticsResult struct {
 	Isolation []DiagnosticsIsolationView `json:"isolation"`
 
 	RepositoryWorkspaces []DiagnosticsRepositoryWorkspaceView `json:"repositoryWorkspaces"`
+	// StopReason (V12-11): why the run stopped or is waiting.
+	StopReason *runtime.StopReason `json:"stopReason,omitempty"`
 }
 
 func toDiagnosticsResult(diag runtime.RunDiagnostics) DiagnosticsResult {
@@ -164,6 +211,7 @@ func toDiagnosticsResult(diag runtime.RunDiagnostics) DiagnosticsResult {
 		RunState: diag.RunState, RunVersion: diag.RunVersion,
 		Blockers: blockers, OrphanedAttempts: orphaned, OrphanedAttemptsTruncated: diag.OrphanedAttemptsTruncated,
 		Providers: providers, Isolation: isolationViews, RepositoryWorkspaces: repoWorkspaces,
+		StopReason: diag.StopReason,
 	}
 }
 
@@ -178,7 +226,7 @@ func Diagnostics(ctx context.Context, deps Dependencies, args []string, stdout, 
 	fs := flag.NewFlagSet("run diagnostics", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	projectID := cli.BindProjectFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

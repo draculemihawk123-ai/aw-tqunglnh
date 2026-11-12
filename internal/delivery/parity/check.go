@@ -127,6 +127,9 @@ type Rules struct {
 	// path, operation name, route path or operationId, mark a remote Git
 	// action.
 	RemoteGitTokens map[string]bool
+	// RemoteGitApproved (V12-28) are the exact subjects ADR-060 allows to be remote Git actions: pushing a family branch, opening and
+	// merging its pull request, reading its remote. Nothing else may carry a remote-Git token.
+	RemoteGitApproved map[string]bool
 	// InternalTokens are the lower-case tokens that mark a scheduler/worker
 	// verb in a CLI path or operation name, on top of the registry's own
 	// INTERNAL entries.
@@ -199,7 +202,14 @@ func DefaultRules() Rules {
 			"workspace-set show": "repository-workspace show",
 		},
 		RemoteGitTokens: tokenSet("push", "fetch", "pull", "merge", "rebase", "pr", "remote", "clone", "upstream", "origin"),
-		InternalTokens:  tokenSet("advance", "execute", "claim", "reap", "heartbeat", "lease", "sweep", "reconcileinterrupted"),
+		// ADR-060 (V12-28) supersedes ADR-014 for exactly these.
+		RemoteGitApproved: tokenSet(
+			"app:GetWorkspaceRemote", "app:PushFamilyBranch", "app:CreateWorkspacePullRequest", "app:MergeWorkspacePullRequest",
+			"http:getWorkspaceRemote", "http:pushWorkspaceBranch", "http:createWorkspacePullRequest", "http:mergeWorkspacePullRequest",
+			"cli:repository-workspace remote@PROJECT", "cli:repository-workspace push@PROJECT",
+			"cli:repository-workspace pull-request@PROJECT", "cli:repository-workspace merge@PROJECT",
+		),
+		InternalTokens: tokenSet("advance", "execute", "claim", "reap", "heartbeat", "lease", "sweep", "reconcileinterrupted"),
 	}
 }
 
@@ -579,7 +589,7 @@ func joinPaths(ds []cli.Descriptor) string {
 func (c *checker) checkTokens(subject string, identifiers []string) {
 	for _, id := range identifiers {
 		for _, token := range tokenize(id) {
-			if c.rules.RemoteGitTokens[token] {
+			if c.rules.RemoteGitTokens[token] && !c.rules.RemoteGitApproved[subject] {
 				c.add(ClassRemoteGitExposed, subject, "%q contains the remote-Git token %q (ADR-014: no remote Git mutation in Alpha)", id, token)
 			}
 			if c.rules.InternalTokens[token] {

@@ -147,11 +147,11 @@ func toRunManifestAmendmentView(a runtimedomain.RunManifestAmendment) RunManifes
 // node's own compiled configuration (AuthorizedRoles/RequestedEvidenceKinds/
 // EscalationOutcome, pinned onto the request when it was created — never
 // secret or authorization MATERIAL, only the role NAMES the node itself
-// declares). Deliberately NOT exposed: DecidedBy/DecidedRole/Reason/
-// DecidedAt — the decision's own audit trail, of which Reason is free text
-// that would need this package's redact.Matcher (GetRunDetail takes none,
-// exactly like it takes no SharedState) — ResolvedOutcome is enough for an
-// operator to see what was decided.
+// declares). Deliberately NOT exposed: DecidedRole/Reason/DecidedAt — Reason
+// is free text that would need this package's redact.Matcher (GetRunDetail
+// takes none, exactly like it takes no SharedState). DecidedBy is exposed as
+// ResolvedBy since V12-11 (ADR-051): who decided is an actor id, the same
+// kind of value a blocker view's resolvedBy already shows.
 //
 // State is the real runtimedomain.ApprovalRequestState string (PENDING is
 // the only ACTIONABLE state; DECIDED/ESCALATED/CANCELLED are history).
@@ -175,10 +175,15 @@ type ApprovalRequestView struct {
 	// (an escalation has no deciding actor and no chosen outcome — see
 	// EscalationOutcome for what the timer routed with).
 	ResolvedOutcome string `json:"resolvedOutcome,omitempty"`
+	// ResolvedBy (V12-11) is the actor who decided; empty until a decision lands (and for an escalation).
+	ResolvedBy string `json:"resolvedBy,omitempty"`
 	// Release (V11-07, ADR-040) is the approval node's release policy — which outcomes may carry a commit and
 	// whether it is OFFERED or REQUIRED. Omitted for a node with none (DISABLED), so every response from before
 	// V11-07 stays byte-identical.
 	Release *ApprovalReleaseView `json:"release,omitempty"`
+	// Checklist (V12-31, ADR-063) is the QA checklist of a checklist approval: its items while pending, the items as decided
+	// (the QA_CHECKLIST record) afterwards. Omitted for a plain approval.
+	Checklist *ApprovalChecklistView `json:"checklist,omitempty"`
 }
 
 // ApprovalReleaseView is an approval node's non-disabled release policy as the dialog reads it.
@@ -231,7 +236,7 @@ func activationOrder(nodeRuns []runtimedomain.NodeRun) map[runtimedomain.NodeRun
 // order tiebreak — ActivationSequence can legitimately tie across fork
 // branches, see sortedNodeRuns). Returns nil (never an empty slice) for no
 // requests so the caller's omitempty tag drops the whole key.
-func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[runtimedomain.NodeRunID]uint64, document workflow.WorkflowDocument) []ApprovalRequestView {
+func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[runtimedomain.NodeRunID]uint64, document workflow.WorkflowDocument, qa checklistContext) []ApprovalRequestView {
 	if len(requests) == 0 {
 		return nil
 	}
@@ -252,12 +257,19 @@ func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[
 			State: string(r.State), Version: r.Version,
 			AuthorizedRoles:        append([]string(nil), r.AuthorizedRoles...),
 			RequestedEvidenceKinds: append([]string(nil), r.RequestedEvidenceKinds...),
-			DueAt:                  r.DueAt, EscalationOutcome: r.EscalationOutcome, ResolvedOutcome: r.DecidedOutcome,
+			DueAt:                  r.DueAt, EscalationOutcome: r.EscalationOutcome, ResolvedOutcome: r.DecidedOutcome, ResolvedBy: r.DecidedBy,
 		}
 		if node, ok := findNode(document, r.NodeKey); ok && node.Approval != nil && node.Approval.Release.Mode() != workflow.ReleaseCommitDisabled {
 			view.Release = &ApprovalReleaseView{
 				Commit: string(node.Approval.Release.Mode()), Outcomes: append([]string(nil), node.Approval.Release.Outcomes...),
 			}
+		}
+		if node, ok := findNode(document, r.NodeKey); ok {
+			var record *ports.ApprovalChecklistRecord
+			if rec, found := qa.records[string(r.ID)]; found {
+				record = &rec
+			}
+			view.Checklist = approvalChecklistView(node, qa.item, record)
 		}
 		views = append(views, view)
 	}
@@ -389,6 +401,10 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 			}
 			document = version.Document()
 		}
+		qa, err := loadChecklistContext(ctx, tx, run, document)
+		if err != nil {
+			return err
+		}
 		detail = RunDetail{
 			RunID: string(run.ID), ProjectID: string(run.ProjectID), WorkItemID: string(run.WorkItemID),
 			FamilyID: string(run.FamilyID), State: string(run.State), Version: run.Version, ScopeVersion: run.ScopeVersion,
@@ -396,7 +412,7 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 			StartedAt: run.StartedAt, FinishedAt: run.FinishedAt, Cancelling: run.CancelEpoch != nil,
 			Manifest: toExecutionManifestDetail(manifest), Amendments: amendmentViews,
 			NodeRunCount: len(nodeRuns), ExecutionAttemptCount: len(attempts),
-			ApprovalRequests:  toApprovalRequestViews(approvalRequests, order, document),
+			ApprovalRequests:  toApprovalRequestViews(approvalRequests, order, document, qa),
 			WaitRegistrations: toWaitRegistrationViews(waitRegistrations, order),
 		}
 		return nil
@@ -517,6 +533,8 @@ type NodeActivationView struct {
 	BranchTokenID      string `json:"branchTokenId,omitempty"`
 	ReactivationReason string `json:"reactivationReason,omitempty"`
 	BlockReason        string `json:"blockReason,omitempty"`
+	// ResultSummary (V12-11) is what this activation produced, in one redacted line (ResultSummary); filled by the graph route.
+	ResultSummary string `json:"resultSummary,omitempty"`
 }
 
 func toNodeActivationView(nr runtimedomain.NodeRun, matcher redact.Matcher) NodeActivationView {
@@ -732,6 +750,11 @@ func attemptToTimelineEntry(nr runtimedomain.NodeRun, a runtimedomain.ExecutionA
 		ProviderKey: a.ProviderKey, StartedAt: a.StartedAt, FinishedAt: a.FinishedAt,
 		TerminationReason: string(a.TerminationReason), FailureCode: string(a.FailureCode),
 	}
+	// started_at is not recorded for every attempt; show when it was created instead so the UI can time it (V12).
+	if entry.StartedAt == nil && !a.CreatedAt.IsZero() {
+		createdAt := a.CreatedAt
+		entry.StartedAt = &createdAt
+	}
 	if a.LastCheckpointID != nil {
 		entry.LastCheckpointID = string(*a.LastCheckpointID)
 	}
@@ -838,6 +861,19 @@ func GetRunTimeline(ctx context.Context, uow ports.UnitOfWork, matcher redact.Ma
 				return err
 			}
 			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.ProviderFailureDetailFromRecords(records))
+		}
+		// V12-04: a COMMAND or MACHINE_GATE attempt whose process never started says why.
+		for i := range timeline.Entries {
+			entry := &timeline.Entries[i]
+			if entry.Kind != TimelineEntryExecutionAttempt || entry.FailureDetail != "" ||
+				entry.AttemptState != string(runtimedomain.ExecutionAttemptFailed) {
+				continue
+			}
+			records, err := tx.AgentEvents().ListByAttemptAndKind(ctx, entry.AttemptID, string(ports.AgentEventDiagnostic))
+			if err != nil {
+				return err
+			}
+			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.DiagnosticMessageFromRecords(records, ProcessStartFailedDiagnosticCode))
 		}
 		// V9-13a: what each provider attempt reported using, and the run's total.
 		// Only an attempt with a provider can have usage, and only its

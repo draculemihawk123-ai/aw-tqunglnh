@@ -14,7 +14,11 @@ import {
 } from '../components/ui';
 import { ArrowLeft, Boxes, ChevronRight, Columns3, FolderGit2, Plus } from '../components/icons';
 import { AssignPackDialog } from './AssignPackDialog';
+import { ProjectStatus } from './ProjectStatus';
+import { CommitTemplatePanel } from './CommitTemplatePanel';
+import { TaskDocumentsPanel } from './TaskDocumentsPanel';
 import { RepositoryReadinessDialog } from './RepositoryReadinessDialog';
+import { RepositorySecretsDialog } from './RepositorySecretsDialog';
 import { ArchiveProjectDialog, RenameProjectDialog } from './ProjectDialogs';
 import {
   CheckResult, DeleteRepositoryDialog, DisableRepositoryDialog, EditRepositoryDialog, RepositoryFailure, checkRepositoryPath,
@@ -46,6 +50,8 @@ interface Props {
   projectId?: string;
   onSelectProject: (projectId: string) => void;
   onNavigate?: (route: 'projects' | 'project-board' | 'project-components') => void;
+  /** V12-24: opens a task from the status panel. */
+  onOpenTask?: (taskId: string) => void;
   isOffline?: boolean;
 }
 
@@ -223,12 +229,13 @@ function ProjectIdentity({ project, repoCount, componentCount, blockerCount, onB
   );
 }
 
-export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, isOffline = false }: Props) {
+export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, onOpenTask, isOffline = false }: Props) {
   const [createDialog, setCreateDialog] = useState(false);
   const [registerDialog, setRegisterDialog] = useState(false);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [assignPackTarget, setAssignPackTarget] = useState<ComponentView | null>(null);
   const [readinessTarget, setReadinessTarget] = useState<RepositoryView | null>(null);
+  const [secretsTarget, setSecretsTarget] = useState<RepositoryView | null>(null); // V12-29
   const [editTarget, setEditTarget] = useState<RepositoryView | null>(null);
   const [disableTarget, setDisableTarget] = useState<RepositoryView | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RepositoryView | null>(null);
@@ -450,6 +457,11 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-5xl mx-auto space-y-5">
         <ProjectIdentity project={project} repoCount={repos.length} componentCount={components.length} blockerCount={blockerCount} onBack={() => onNavigate?.('projects')} onRestore={() => restoreProject(project)} />
+        {/* V12-24: the project's status, and the report */}
+        <ProjectStatus projectId={project.id} projectName={project.name} isOffline={isOffline} onOpenTask={onOpenTask} />
+        {/* V12-25: the default commit message, in the repository's convention */}
+        <CommitTemplatePanel projectId={project.id} isOffline={isOffline} readOnly={readOnly} />
+        <TaskDocumentsPanel projectId={project.id} isOffline={isOffline} readOnly={readOnly} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <section className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
             <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC] flex items-center justify-between"><h2 className="text-sm font-semibold">Repository onboarding</h2><FolderGit2 size={15} aria-hidden className="text-[#475569]" /></div>
@@ -476,6 +488,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
                       </div>
                       <div className="flex items-center gap-2">
                         <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Readiness of ${repo.name}`} onClick={() => setReadinessTarget(repo)}>Readiness</Button>
+                        <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Secrets of ${repo.name}`} onClick={() => setSecretsTarget(repo)}>Secrets</Button>
                         {allows(repo, 'repositoriesRetryProbe') && (
                           <Button size="compact" intent="primary" loading={retryingId === repo.id} disabled={isOffline || readOnly} onClick={() => retryProbe(repo)}>Retry Probe</Button>
                         )}
@@ -511,6 +524,9 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
         </div>
         <div className="flex justify-end"><Button intent="primary" onClick={() => onNavigate?.('project-board')}><Columns3 size={14} aria-hidden /> Open Board</Button></div>
       </div>
+      {secretsTarget && (
+        <RepositorySecretsDialog projectId={secretsTarget.projectId} repositoryId={secretsTarget.id} repositoryName={secretsTarget.name} onClose={() => setSecretsTarget(null)} />
+      )}
       {readinessTarget && (
         <RepositoryReadinessDialog
           repository={readinessTarget}

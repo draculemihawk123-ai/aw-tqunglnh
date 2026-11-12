@@ -3,10 +3,10 @@ package catalog_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -25,7 +25,7 @@ func TestRegisterRepository_ExistingID_IsTypedAlreadyExists_ReplayStillWorks(t *
 	backends := map[string]func(t *testing.T) ports.UnitOfWork{
 		"fake": func(t *testing.T) ports.UnitOfWork { return fake.New() },
 		"sqlite": func(t *testing.T) ports.UnitOfWork {
-			store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "register-duplicate.db"))
+			store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "register-duplicate.db"))
 			if err != nil {
 				t.Fatalf("sqlite.Open: %v", err)
 			}

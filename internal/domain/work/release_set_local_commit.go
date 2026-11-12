@@ -94,12 +94,20 @@ const (
 	// operation closes FAILED and the operator requests a new commit from the current change
 	// set, which shows the approver what is there now.
 	FailureChangeSetDrift ReleaseSetLocalCommitFailureReason = "CHANGESET_DRIFT"
+	// FailureExecutionError (V12-01): the worker could not carry the operation to an end — every
+	// claim of its job returned an error (a write lease held elsewhere, a Git error, a busy
+	// database), or the job went DEAD because its lease kept expiring. Before V12-01 such an
+	// operation stayed REQUESTED for ever and nothing said why. FailureDetail holds the last error
+	// (redacted). The operator fixes the cause and requests the commit again; the new request
+	// gets a fresh marker (see CountNoChangesFailedReleaseSetLocalCommits).
+	FailureExecutionError ReleaseSetLocalCommitFailureReason = "EXECUTION_ERROR"
 )
 
 // IsValid reports whether reason is one of this type's own closed set.
 func (r ReleaseSetLocalCommitFailureReason) IsValid() bool {
 	switch r {
-	case FailureWorkspaceQuarantined, FailureMarkerDrift, FailureNoChanges, FailureHeadDrift, FailureChangeSetDrift:
+	case FailureWorkspaceQuarantined, FailureMarkerDrift, FailureNoChanges, FailureHeadDrift, FailureChangeSetDrift,
+		FailureExecutionError:
 		return true
 	default:
 		return false
@@ -151,6 +159,9 @@ type ReleaseSetLocalCommit struct {
 	Marker        string
 	State         ReleaseSetLocalCommitState
 	FailureReason ReleaseSetLocalCommitFailureReason
+	// FailureDetail (V12-01) is a short, redacted, human-readable explanation of a FAILED
+	// operation — set for EXECUTION_ERROR (the last error the worker saw); empty otherwise.
+	FailureDetail string
 	// ParentVCSObjectID is populated once a worker has pinned it (see
 	// ports.WorkRepository.PinReleaseSetLocalCommitParent's own doc
 	// comment) — the exact commit this operation's own local commit is

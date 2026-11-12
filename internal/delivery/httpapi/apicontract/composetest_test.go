@@ -24,6 +24,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
@@ -62,7 +63,7 @@ func buildRealRegistry(t *testing.T) *httpapi.RouteRegistry {
 	t.Helper()
 	ctx := context.Background()
 
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "apicontract.db"))
+	store, err := sqlite.Open(ctx, sqlitetest.MigratedPath(t, "apicontract.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

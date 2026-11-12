@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite/sqlitetest"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -20,7 +20,7 @@ import (
 
 func openSQLiteStore(t *testing.T, name string) *sqlite.Store {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := sqlite.Open(context.Background(), sqlitetest.MigratedPath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -400,6 +400,13 @@ func TestCreateChildWorkItem_NoNewWorkspaceSetOrProvisionJobSQLite(t *testing.T)
 	}
 	if eventCount != 1 {
 		t.Fatalf("ChildWorkItemCreated event count = %d, want exactly 1", eventCount)
+	}
+
+	// V12-31: the work item reads back with its effective scope (what a QA "Create fix task" starts from).
+	detail, err := work.GetWorkItem(ctx, uow, ports.ProjectScope("project-1"), result.WorkItemID)
+	if err != nil || len(detail.EffectiveScope) != 1 || detail.EffectiveScope[0].RepositoryID != "repo-1" ||
+		detail.EffectiveScope[0].Access != string(workdomain.RepositoryWrite) || detail.EffectiveScope[0].PathScopes[0] != "services/api/handler" {
+		t.Fatalf("GetWorkItem effectiveScope = %+v, %v", detail.EffectiveScope, err)
 	}
 }
 

@@ -42,6 +42,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
@@ -204,6 +205,8 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 		Kind: ports.AgentEventExecutionFinished, ObservedAt: time.Now().UTC(),
 		Message: fmt.Sprintf("exit code %d", result.ExitCode),
 	})
+	// V12-04: a process that never started says why in the attempt's failure detail.
+	recordProcessStartFailure(ctx, sink, req.AttemptID, 3, result, runErr)
 	flushErr := sink.Flush(ctx)
 
 	classified, err := e.classify(
@@ -269,11 +272,13 @@ func (e *CommandNodeExecutor) classify(
 	if !result.TreeQuiesced && resolved.hasWriteMount {
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: process tree did not confirm quiescence on a mutating attempt", ErrIndeterminateExecution)
 	}
-	if runErr != nil {
+	if _, notStarted := processStartFailure(result, runErr); notStarted {
 		// A bare Go error spawning the process itself (executable missing,
 		// permission denied) with quiescence otherwise confirmed — the
 		// same row-1 mapping AgentNodeExecutor's own classify already uses
-		// for an analogous bare provider-spawn error.
+		// for an analogous bare provider-spawn error. V12-04: a Windows exit
+		// code that means the process never initialized (0xC0000142) is the
+		// same case, never a functional verdict to route on.
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			ErrorCode: errorcode.CodeProviderUnavailable,
@@ -548,11 +553,26 @@ func resolveCommandInvocation(
 	if !ok {
 		return nil, "", nil, fmt.Errorf("%w: cwd repository target %q is not in this node run's effective scope", ErrCommandInvocationUnresolvable, doc.CwdRepositoryTarget)
 	}
-	argv, env, err = resolveArgvAndSecrets(ctx, doc, mountByRepo, secrets)
+	argv, env, err = resolveArgvAndSecrets(ctx, doc, mountByRepo, secrets, doc.CwdRepositoryTarget)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	return argv, cwdMount.WorkingDirectory, env, nil
+}
+
+// secretRepositoryOrder is where a secret is looked up (V12-29): first, then the other repositories in scope by id.
+func secretRepositoryOrder(mountByRepo map[string]ports.AgentWorkspaceMount, first string) []string {
+	others := make([]string, 0, len(mountByRepo))
+	for id := range mountByRepo {
+		if id != first {
+			others = append(others, id)
+		}
+	}
+	sort.Strings(others)
+	if first == "" {
+		return others
+	}
+	return append([]string{first}, others...)
 }
 
 // mountsByRepositoryID is resolveCommandInvocation/resolveArgvAndSecrets's
@@ -589,8 +609,12 @@ func mountsByRepositoryID(mounts []ports.AgentWorkspaceMount) map[string]ports.A
 // resolves to a real repository mount) and GateNodeExecutor (V5-10, cwd
 // is always a fresh scratch directory instead) — cwd resolution is
 // deliberately NOT part of this function; each caller resolves its own.
+//
+// V12-29 (ADR-061): when secrets is a ports.ScopedSecretResolver, a secret is looked up in the repository store of firstRepository
+// (the COMMAND's cwd repository; empty for a gate) and then of every other repository in the effective scope, by id, before the
+// worker's environment.
 func resolveArgvAndSecrets(
-	ctx context.Context, doc command.CommandDocument, mountByRepo map[string]ports.AgentWorkspaceMount, secrets ports.SecretResolver,
+	ctx context.Context, doc command.CommandDocument, mountByRepo map[string]ports.AgentWorkspaceMount, secrets ports.SecretResolver, firstRepository string,
 ) (argv []string, env map[string]string, err error) {
 	argv = make([]string, 0, len(doc.Argv))
 	for i, element := range doc.Argv {
@@ -611,7 +635,13 @@ func resolveArgvAndSecrets(
 	if len(doc.SecretRefs) > 0 {
 		env = make(map[string]string, len(doc.SecretRefs))
 		for _, ref := range doc.SecretRefs {
-			value, resolveErr := secrets.Resolve(ctx, ref)
+			var value string
+			var resolveErr error
+			if scoped, ok := secrets.(ports.ScopedSecretResolver); ok {
+				value, resolveErr = scoped.ResolveScoped(ctx, secretRepositoryOrder(mountByRepo, firstRepository), ref)
+			} else {
+				value, resolveErr = secrets.Resolve(ctx, ref)
+			}
 			if resolveErr != nil {
 				return nil, nil, fmt.Errorf("%w: secret %q: %v", ErrCommandInvocationUnresolvable, ref, resolveErr)
 			}

@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
@@ -69,6 +70,11 @@ type NodeExecutionResult struct {
 	// anything durable (a ScopeExpansionOrigin, a BLOCKED Attempt/NodeRun)
 	// is ever built from it — never itself a grant.
 	RequestedScopeExpansion *runtime.ScopeExpansionProposal
+	// BlockedDetail and ResumeAt (V12-03) describe a BLOCKED result whose TerminationReason is PROVIDER_QUOTA_EXCEEDED: the
+	// provider's own words (redacted, bounded) and, when they name one, the time its limit resets. ResumeAt nil means the
+	// reset time could not be read; the engine then retries after a default delay.
+	BlockedDetail string
+	ResumeAt      *time.Time
 	// Evidence is populated when State == ExecutionAttemptSucceeded (V5-08B)
 	// — the terminal evidence bundle FinalizeExecutionAttempt re-validates,
 	// inside its own fenced transaction, before ever committing SUCCEEDED —

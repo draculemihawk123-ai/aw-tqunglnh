@@ -45,6 +45,8 @@ export interface NodeActivationView {
   branchTokenId?: string;
   reactivationReason?: string;
   blockReason?: string;
+  /** V12-11: what this activation produced, in one line. */
+  resultSummary?: string;
 }
 
 export interface BranchTokenView {
@@ -146,6 +148,32 @@ export interface ApprovalRequestView {
   dueAt: string;
   escalationOutcome: string;
   resolvedOutcome?: string;
+  /** V12-11: who decided. */
+  resolvedBy?: string;
   /** V11-07: the node's release policy (which outcomes may carry a commit); absent when it has none. */
   release?: ApprovalReleasePolicy;
+  /** V12-31: the QA checklist of a checklist approval — its items while pending, the items as decided afterwards. */
+  checklist?: ApprovalChecklistView;
 }
+
+/** V12-31 (ADR-063): one item of a QA checklist. */
+export interface ChecklistItemView {
+  id: string;
+  text: string;
+  source: 'ACCEPTANCE_CRITERION' | 'MANUAL' | string;
+  result?: 'PASSED' | 'FAILED' | string;
+  note?: string;
+  attachmentMessageIds?: string[];
+}
+
+export interface ApprovalChecklistView {
+  passedOutcome: string;
+  failedOutcome: string;
+  items: ChecklistItemView[];
+  verdict?: 'PASSED' | 'FAILED' | string;
+  decidedBy?: string;
+  decidedAt?: string;
+}
+
+/** What resolveApproval takes for one item. */
+export interface ChecklistItemResult { id: string; result: 'PASSED' | 'FAILED'; note?: string; attachmentMessageIds?: string[] }

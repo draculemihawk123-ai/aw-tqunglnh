@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
@@ -37,5 +38,35 @@ func handleGetRunDiagnostics(deps Dependencies) http.HandlerFunc {
 		}
 
 		_ = httpapi.EncodeResult(w, http.StatusOK, toRunDiagnosticsResponse(diag), httpapi.ETagFromVersion(diag.RunVersion))
+	}
+}
+
+// handleListNeedsYou is GET /projects/{projectId}/needs-you (V12-16): runtime.ListNeedsYou, a read.
+func handleListNeedsYou(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := strings.TrimSpace(r.PathValue("projectId"))
+		if projectID == "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.ErrorCodeInvalidRequest, "projectId path segment is required", nil)
+			return
+		}
+		list, err := runtime.ListNeedsYou(r.Context(), deps.UOW, redact.NewMatcher(), projectID)
+		if err != nil {
+			writeQueryError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, list, "")
+	}
+}
+
+// handleGetProjectCosts is GET /projects/{projectId}/costs (V12-23): runtime.GetProjectCosts, a read.
+func handleGetProjectCosts(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := strings.TrimSpace(r.PathValue("projectId"))
+		costs, err := runtime.GetProjectCosts(r.Context(), deps.UOW, redact.NewMatcher(), projectID)
+		if err != nil {
+			writeQueryError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, costs, "")
 	}
 }
