@@ -233,7 +233,7 @@ func (s *Store) migrateWith(ctx context.Context, migrations []migration) error {
 	}
 	defer conn.Close()
 
-	if _, err := conn.ExecContext(ctx, bootstrapSchema); err != nil {
+	if err := execBootstrapSchema(ctx, conn); err != nil {
 		return fmt.Errorf("bootstrap migrations: %w", err)
 	}
 
@@ -339,6 +339,24 @@ func applyOneMigration(ctx context.Context, conn *sql.Conn, m migration) error {
 
 // migrationLockWait bounds how long a process waits for another process's migration to finish (V12-08).
 const migrationLockWait = 2 * time.Minute
+
+// execBootstrapSchema creates schema_migrations, waiting like beginMigrationTx while another process holds the write lock. On a
+// fresh database the first opener holds that lock for its whole migration, which can outlast busy_timeout (5 s) on a slow or
+// race-instrumented build; the CREATE then answered SQLITE_BUSY and the second opener failed instead of waiting its turn.
+func execBootstrapSchema(ctx context.Context, conn *sql.Conn) error {
+	deadline := time.Now().Add(migrationLockWait)
+	for {
+		_, err := conn.ExecContext(ctx, bootstrapSchema)
+		if err == nil || !isSQLiteBusy(err) || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
 
 // beginMigrationTx begins the migration's transaction, which takes SQLite's write lock at BEGIN (_txlock=immediate). V12-08
 // (UX-08): `aw serve` and `aw worker` started together on a fresh database both saw a migration as not applied and both ran it —
